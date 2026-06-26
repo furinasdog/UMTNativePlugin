@@ -1,0 +1,40 @@
+# CMake build directories (single-toolchain each)
+/build/
+/build-android-arm64/
+build*/
+cmake-build-*/
+
+# Bullet 2.75 — fetched automatically by CMake (FetchContent) into the build
+# tree and used unmodified (no source patch). A local checkout under ThirdParty/
+# is optional (use -DBulletRoot=...); never commit it (large third-party tree, ~62 MB).
+/ThirdParty/bullet-2.75/
+
+# CMake artifacts that may leak outside the build dirs
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+*.cmake.stamp
+compile_commands.json
+
+# Compiled output
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.exp
+*.pdb
+*.obj
+*.o
+*.ilk
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+
+# OS noise
+Thumbs.db
+.DS_Store
