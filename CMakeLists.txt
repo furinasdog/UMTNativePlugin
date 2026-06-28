@@ -75,7 +75,9 @@ endif()
 #   -DUMT_PACKAGE_DIR=/path/to/com.candidumgames.unitymmdtools
 set(UMT_PACKAGE_DIR "" CACHE PATH "UMT Unity package folder to copy the built plugin into. Empty (default) skips the copy.")
 
-if(ANDROID)
+if(EMSCRIPTEN)
+    set(_default_unity_plugin_output "${UMT_PACKAGE_DIR}/Plugins/Web")
+elseif(ANDROID)
     set(_default_unity_plugin_output "${UMT_PACKAGE_DIR}/Plugins/Android/${ANDROID_ABI}")
 else()
     set(_default_unity_plugin_output "${UMT_PACKAGE_DIR}/Plugins/Windows/x64")
@@ -91,10 +93,18 @@ add_subdirectory("${BulletRoot}/src/LinearMath" "${CMAKE_CURRENT_BINARY_DIR}/Bul
 add_subdirectory("${BulletRoot}/src/BulletCollision" "${CMAKE_CURRENT_BINARY_DIR}/Bullet/BulletCollision")
 add_subdirectory("${BulletRoot}/src/BulletDynamics" "${CMAKE_CURRENT_BINARY_DIR}/Bullet/BulletDynamics")
 
-add_library(UMTNativePlugin SHARED
-    Source/NativeContext.cpp
-    Source/NativeContext.h
-)
+# Unity's Web platform cannot load shared libraries at runtime: native code is linked statically into the IL2CPP/Emscripten player at build time. Every other target ships a hot-loadable shared library (.dll / .so).
+if(EMSCRIPTEN)
+    add_library(UMTNativePlugin STATIC
+        Source/NativeContext.cpp
+        Source/NativeContext.h
+    )
+else()
+    add_library(UMTNativePlugin SHARED
+        Source/NativeContext.cpp
+        Source/NativeContext.h
+    )
+endif()
 
 target_include_directories(UMTNativePlugin PRIVATE
     "${BulletRoot}/src"
@@ -129,11 +139,26 @@ if(MSVC)
     target_compile_options(UMTNativePlugin PRIVATE /WX /Wall ${_MSVC_SUPPRESSED_WARNINGS} /permissive-)
 endif()
 
+# Artifact handed to Unity: normally the target's own binary. The Web build links statically, but target_link_libraries does not fold the Bullet archives into libUMTNativePlugin.a, so bundle them into one self-contained archive (llvm-ar's L modifier flattens member archives). Unity then links a single artifact, matching the .dll / .so layout of the other targets.
+set(_plugin_artifact "$<TARGET_FILE:UMTNativePlugin>")
+
+if(EMSCRIPTEN)
+    set(_bundled_dir "${CMAKE_CURRENT_BINARY_DIR}/bundled")
+    set(_plugin_artifact "${_bundled_dir}/$<TARGET_FILE_NAME:UMTNativePlugin>")
+    add_custom_command(TARGET UMTNativePlugin POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundled_dir}"
+        COMMAND "${CMAKE_COMMAND}" -E rm -f "${_plugin_artifact}"
+        COMMAND "${CMAKE_AR}" qcsL "${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
+        COMMENT "Bundling Bullet archives into a self-contained ${_plugin_artifact}"
+        VERBATIM
+    )
+endif()
+
 if(UMT_PACKAGE_DIR)
     message(STATUS "POST_BUILD will copy the plugin to: ${UnityPluginOutput}")
     add_custom_command(TARGET UMTNativePlugin POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${UnityPluginOutput}"
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:UMTNativePlugin>" "${UnityPluginOutput}/$<TARGET_FILE_NAME:UMTNativePlugin>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_plugin_artifact}" "${UnityPluginOutput}/$<TARGET_FILE_NAME:UMTNativePlugin>"
     )
 else()
     message(STATUS "UMT_PACKAGE_DIR not set; built plugin stays in the build tree. Set -DUMT_PACKAGE_DIR=<package> to copy into the UMT package.")

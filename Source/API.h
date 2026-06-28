@@ -3,6 +3,10 @@
 
 #if defined(_WIN32)
 #define MMDPHYSICSAPI extern "C" __declspec(dllexport)
+#elif defined(__EMSCRIPTEN__)
+// Unity's Web platform links this plugin as a static archive into the IL2CPP/Emscripten player; EMSCRIPTEN_KEEPALIVE keeps the exported symbols from being dead-stripped so the managed [DllImport("__Internal")] entry points resolve.
+#include <emscripten.h>
+#define MMDPHYSICSAPI extern "C" EMSCRIPTEN_KEEPALIVE
 #else
 #define MMDPHYSICSAPI extern "C"
 #endif

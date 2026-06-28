@@ -8,6 +8,7 @@ Native plugin backing the MMD bullet physics in [Unity MMD Tools (UMT)](https://
 | ----------------- | ----------- | ---------------------------------------- |
 | Windows           | x64         | `UMTNativePlugin.dll`             |
 | Android           | arm64-v8a   | `libUMTNativePlugin.so`           |
+| Web               | WebAssembly | `libUMTNativePlugin.a`            |
 
 The build is standalone and does not require Unity. Optionally, it can also copy the finished binary into a UMT Unity package's `Plugins/` folder via a CMake POST_BUILD` step when `UMT_PACKAGE_DIR` is set (see [Output](#output)).
 
@@ -37,6 +38,7 @@ UMTNativePlugin/
 - A **C++17** compiler
   - Windows: **Visual Studio 2022+** (MSVC14.3+)
   - Android: an **Android NDK** (r27 recommended) and **Ninja**
+  - Web: an **Emscripten** SDK (3.1.x recommended) and **Ninja**
 - Network access on first configure (to download Bullet) or a local checkout for offline builds
 
 ## Building
@@ -63,6 +65,29 @@ cmake --build build-android-arm64 --config Release
 
 `ANDROID_NDK` can be any standalone NDK install (e.g. from Android Studio's SDK Manager, the `sdkmanager` CLI, a manual download or a Unity-bundled NDK `<...>/Editor/Data/PlaybackEngines/AndroidPlayer/NDK` ).
 
+### Web (WebAssembly)
+
+Requires Ninja and an Emscripten SDK, and builds through the Emscripten toolchain file. **The Unity-bundled Emscripten is recommended** (`<...>/Editor/Data/PlaybackEngines/WebGLSupport/BuildTools/Emscripten`) since it matches the Editor's WebGL toolchain — but it ships no `.emscripten` config and is not on PATH, so set up a generated config, a writable cache, and PATH before configuring.
+
+```powershell
+
+$em = "$<...>/Editor/Data/PlaybackEngines/WebGLSupport/BuildTools/Emscripten"
+$env:EMSDK_PYTHON = "$em/python/python.exe"
+$env:EM_CONFIG = "$env:TEMP/umt-emscripten.config"
+$env:EM_CACHE = "$env:TEMP/umt-em-cache"
+Set-Content $env:EM_CONFIG @("LLVM_ROOT = '$em/llvm'", "BINARYEN_ROOT = '$em/binaryen'", "NODE_JS = '$em/node/node.exe'", "EMSCRIPTEN_ROOT = '$em/emscripten'", "COMPILER_ENGINE = NODE_JS", "JS_ENGINES = [NODE_JS]")
+$env:PATH = "$em/emscripten;$em/node;$env:PATH"
+cmake -S . -B build-web -G Ninja `
+    -DCMAKE_TOOLCHAIN_FILE="$em/emscripten/cmake/Modules/Platform/Emscripten.cmake" `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DCMAKE_INSTALL_PREFIX="build-web/_install"
+cmake --build build-web
+```
+
+`-DCMAKE_INSTALL_PREFIX` is required: the Emscripten toolchain otherwise derives the install prefix from `em-config CACHE`, whose Windows `.bat` wrapper echoes batch lines into the captured output and corrupts `CMakeCache.txt`. Passing the prefix ourselves skips that probe.
+
+`target_link_libraries` does not fold the Bullet archives into `libUMTNativePlugin.a`, so a POST_BUILD step bundles them into one self-contained archive for Unity to link.
+
 **Offline / air-gapped builds.**
 Point at a local Bullet 2.75 checkout to skip the download entirely:
 
@@ -83,6 +108,7 @@ cmake -S . -B build -G "Visual Studio 18 2026" -A x64 \
 
 - Windows : `<UMT_PACKAGE_DIR>/Plugins/Windows/x64/UMTNativePlugin.dll`
 - Android : `<UMT_PACKAGE_DIR>/Plugins/Android/arm64-v8a/libUMTNativePlugin.so`
+- Web : `<UMT_PACKAGE_DIR>/Plugins/Web/libUMTNativePlugin.a`
 
 Override the exact destination instead with `-DUnityPluginOutput=<path>`.
 
