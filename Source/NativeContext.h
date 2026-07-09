@@ -11,6 +11,21 @@ namespace MMDBulletPhysics
     /// </summary>
     struct NativeContext;
 
+    /// <summary>
+    /// Tunable context parameters, all defaulting to the historical hardcoded values so an unset config reproduces the previous behavior exactly. Set via <c>MMDBulletPhysicsSetConfig</c>. Field order and packing are ABI-critical and must stay in sync with the host declaration.
+    /// </summary>
+    struct NativeConfig
+    {
+        /// <summary>Ground-plane normal in DLL space; historical default (0, 1, 0).</summary>
+        float groundNormal[3];
+        /// <summary>Ground-plane constant (signed distance from origin along the normal); historical default 0.</summary>
+        float groundConstant;
+        /// <summary>MMD-unit-to-Unity-unit scale; historical default 0.08. Kept for callers that derive scale-dependent quantities; the margin below is applied directly.</summary>
+        float mmdUnitToUnityUnit;
+        /// <summary>Scaled convex collision margin applied to box/capsule shapes; historical default 0.04 * 0.08 = 0.0032.</summary>
+        float convexMargin;
+    };
+
     /// <summary>Collider shape kind. Layout-compatible with managed <c>UMT.PMXRigidBody.Shape</c>.</summary>
     enum class RigidBodyShape : std::uint8_t
     {

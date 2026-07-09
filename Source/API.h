@@ -1,7 +1,10 @@
 #pragma once
 #include <cstdint>
 
-#if defined(_WIN32)
+#if defined(UMT_NATIVE_STATIC)
+// Built as a static library linked directly by the host (e.g. Unreal Engine via UBT). No dllexport/keepalive: the host's linker resolves the plain extern "C" symbols out of the archive.
+#define MMDPHYSICSAPI extern "C"
+#elif defined(_WIN32)
 #define MMDPHYSICSAPI extern "C" __declspec(dllexport)
 #elif defined(__EMSCRIPTEN__)
 // Unity's Web platform links this plugin as a static archive into the IL2CPP/Emscripten player; EMSCRIPTEN_KEEPALIVE keeps the exported symbols from being dead-stripped so the managed [DllImport("__Internal")] entry points resolve.
@@ -32,6 +35,15 @@ MMDPHYSICSAPI MMDBulletPhysics::NativeContext* MMDBulletPhysicsCreate(
 /// </summary>
 /// <param name="context">Native context to destroy.</param>
 MMDPHYSICSAPI void MMDBulletPhysicsDestroy(MMDBulletPhysics::NativeContext* context);
+
+/// <summary>
+/// Overrides the context's tunable parameters (ground-plane normal/constant, MMD-to-Unity unit scale, and scaled convex collision margin). Every field defaults to the historical hardcoded value at context creation, so callers that never invoke this get byte-for-byte the previous behavior. The ground fields take effect at the next <c>MMDBulletPhysicsBuildGround</c>; the convex margin takes effect at the next <c>MMDBulletPhysicsBuildRigidBodies</c>, so call this before those.
+/// </summary>
+/// <param name="context">Native context.</param>
+/// <param name="config">Configuration to copy into the context (pointer to a <c>NativeConfig</c>).</param>
+MMDPHYSICSAPI void MMDBulletPhysicsSetConfig(
+    MMDBulletPhysics::NativeContext* context,
+    const MMDBulletPhysics::NativeConfig* config);
 
 /// <summary>
 /// Resets the simulation to its initial state using the given random seed.

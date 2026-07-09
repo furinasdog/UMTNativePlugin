@@ -23,14 +23,24 @@
 namespace MMDBulletPhysics
 {
     constexpr btScalar k_MMDUnitToUnityUnit = btScalar(0.08);
-    constexpr btScalar k_CcdSweptSphereScale = btScalar(0.8);
+    constexpr btScalar k_CCDSweptSphereScale = btScalar(0.8);
     constexpr btScalar k_MinCcdSweptSphereRadius = btScalar(0.0001);
-    // Bullet's default convex collision margin (0.04) is set for MMD-native-scale colliders. This
-    // pipeline scales everything to Unity units (x0.08), so the unscaled 0.04 margin hugely inflates
-    // the small colliders (e.g. a 0.1-radius capsule gains a 0.04 skin = +40%), causing spurious deep
-    // penetration at rest. Scale the margin into Unity space so it stays proportionally tiny.
+    // Bullet's default convex collision margin (0.04) is set for MMD-native-scale colliders. This pipeline scales everything to Unity units (x0.08), so the unscaled 0.04 margin hugely inflates the small colliders (e.g. a 0.1-radius capsule gains a 0.04 skin = +40%), causing spurious deep penetration at rest. Scale the margin into Unity space so it stays proportionally tiny.
     constexpr btScalar k_BulletDefaultConvexMargin = btScalar(0.04);
     constexpr btScalar k_ScaledBulletDefaultConvexMargin = k_BulletDefaultConvexMargin * k_MMDUnitToUnityUnit;
+
+    // Config seeded into every context at creation so an untouched context reproduces the historical hardcoded behavior exactly.
+    inline NativeConfig DefaultConfig()
+    {
+        NativeConfig config;
+        config.groundNormal[0] = 0.0f;
+        config.groundNormal[1] = 1.0f;
+        config.groundNormal[2] = 0.0f;
+        config.groundConstant = 0.0f;
+        config.mmdUnitToUnityUnit = float(k_MMDUnitToUnityUnit);
+        config.convexMargin = float(k_ScaledBulletDefaultConvexMargin);
+        return config;
+    }
 
     struct NativeContext
     {
@@ -42,6 +52,7 @@ namespace MMDBulletPhysics
         btRigidBody* groundRigidBody;
         int maxSubSteps;
         float fixedTimeStep;
+        NativeConfig config;
         btAlignedObjectArray<btCollisionShape*> shapes;
         btAlignedObjectArray<btDefaultMotionState*> motionStates;
         btAlignedObjectArray<btRigidBody*> rigidBodies;
@@ -103,9 +114,9 @@ btScalar ComputeCcdSweptSphereRadius(const MMDBulletPhysics::RigidBodySimulation
     {
     case MMDBulletPhysics::RigidBodyShape::Sphere:
     case MMDBulletPhysics::RigidBodyShape::Capsule:
-        return rigidBody.size[0] * MMDBulletPhysics::k_CcdSweptSphereScale;
+        return rigidBody.size[0] * MMDBulletPhysics::k_CCDSweptSphereScale;
     case MMDBulletPhysics::RigidBodyShape::Box:
-        return btMin(rigidBody.size[0], btMin(rigidBody.size[1], rigidBody.size[2])) * MMDBulletPhysics::k_CcdSweptSphereScale;
+        return btMin(rigidBody.size[0], btMin(rigidBody.size[1], rigidBody.size[2])) * MMDBulletPhysics::k_CCDSweptSphereScale;
     default:
         std::abort();
     }
@@ -128,7 +139,7 @@ void ConfigureCcd(btRigidBody* body, const MMDBulletPhysics::RigidBodySimulation
     body->setCcdMotionThreshold(sweptSphereRadius);
 }
 
-btCollisionShape* CreateShape(const MMDBulletPhysics::RigidBodySimulationData& rigidBody)
+btCollisionShape* CreateShape(const MMDBulletPhysics::RigidBodySimulationData& rigidBody, btScalar convexMargin)
 {
     switch (rigidBody.shape)
     {
@@ -138,13 +149,13 @@ btCollisionShape* CreateShape(const MMDBulletPhysics::RigidBodySimulationData& r
     case MMDBulletPhysics::RigidBodyShape::Box:
     {
         btBoxShape* shape = new btBoxShape(ToBulletVector(rigidBody.size));
-        shape->setMargin(MMDBulletPhysics::k_ScaledBulletDefaultConvexMargin);
+        shape->setMargin(convexMargin);
         return shape;
     }
     case MMDBulletPhysics::RigidBodyShape::Capsule:
     {
         btCapsuleShape* shape = new btCapsuleShape(rigidBody.size[0], rigidBody.size[1]);
-        shape->setMargin(MMDBulletPhysics::k_ScaledBulletDefaultConvexMargin);
+        shape->setMargin(convexMargin);
         return shape;
     }
     default:
@@ -160,7 +171,8 @@ MMDBulletPhysics::NativeContext::NativeContext(const float* gravity, int solverI
     world(new btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration)),
     groundRigidBody(nullptr),
     maxSubSteps(maxSubStepsValue),
-    fixedTimeStep(fixedTimeStepValue)
+    fixedTimeStep(fixedTimeStepValue),
+    config(DefaultConfig())
 {
     world->setGravity(ToBulletVector(gravity));
     world->getSolverInfo().m_numIterations = solverIterations;
@@ -238,6 +250,13 @@ MMDPHYSICSAPI void MMDBulletPhysicsDestroy(MMDBulletPhysics::NativeContext* cont
     delete context;
 }
 
+MMDPHYSICSAPI void MMDBulletPhysicsSetConfig(
+    MMDBulletPhysics::NativeContext* context,
+    const MMDBulletPhysics::NativeConfig* config)
+{
+    context->config = *config;
+}
+
 MMDPHYSICSAPI void MMDBulletPhysicsReset(MMDBulletPhysics::NativeContext* context, unsigned int seed)
 {
     context->world->clearForces();
@@ -257,7 +276,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
     for (int i = 0; i < rigidBodyCount; ++i)
     {
         const MMDBulletPhysics::RigidBodySimulationData& rigidBody = rigidBodies[i];
-        btCollisionShape* shape = CreateShape(rigidBody);
+        btCollisionShape* shape = CreateShape(rigidBody, btScalar(context->config.convexMargin));
         context->shapes.push_back(shape);
 
         float mass = IsSimulated(rigidBody.mode) ? rigidBody.mass : 0.0f;
@@ -340,7 +359,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildGround(
     uint8_t groupIndex,
     int16_t collisionMask)
 {
-    btCollisionShape* shape = new btStaticPlaneShape(btVector3(0.0f, 1.0f, 0.0f), 0.0f);
+    btCollisionShape* shape = new btStaticPlaneShape(ToBulletVector(context->config.groundNormal), btScalar(context->config.groundConstant));
     context->shapes.push_back(shape);
     btDefaultMotionState* motionState = new btDefaultMotionState(btTransform::getIdentity());
     context->motionStates.push_back(motionState);

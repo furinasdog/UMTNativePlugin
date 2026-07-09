@@ -5,9 +5,7 @@ cmake_minimum_required(VERSION 3.16)
 # Defined before project() so the toolchain activation below runs first.
 set(ANDROID_NDK "" CACHE PATH "Android NDK root. Set this to cross-compile for Android arm64-v8a")
 
-# When an NDK is provided, activate the Android toolchain before project() so no
-# -DCMAKE_TOOLCHAIN_FILE is needed on the command line. CMake re-applies this
-# toolchain during try_compile; the wrapper forwards ANDROID_NDK there.
+# When an NDK is provided, activate the Android toolchain before project() so no -DCMAKE_TOOLCHAIN_FILE is needed on the command line. CMake re-applies this toolchain during try_compile; the wrapper forwards ANDROID_NDK there.
 if(ANDROID_NDK AND NOT CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_LIST_DIR}/Toolchains/Android-aarch64.cmake" CACHE FILEPATH "Android NDK toolchain file")
 endif()
@@ -19,12 +17,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # --- Bullet 2.75 acquisition --------------------------------------------------
-# Bullet 2.75 was removed from the Bullet GitHub repo and survives only as an
-# archive on the Google Code mirror, so a git submodule is not an option. Fetch
-# the zip and verify its SHA256. The Bullet source is used unmodified: the only
-# behavioural tweak this pipeline needs (a collision margin scaled into Unity
-# units) is applied explicitly in code via btCollisionShape::setMargin() in
-# Source/NativeContext.cpp, so no source patch is required.
+# Bullet 2.75 was removed from the Bullet GitHub repo and survives only as an archive on the Google Code mirror, so a git submodule is not an option. Fetch the zip and verify its SHA256. The Bullet source is used unmodified: the only behavioural tweak this pipeline needs (a collision margin scaled into Unity units) is applied explicitly in code via btCollisionShape::setMargin() in Source/NativeContext.cpp, so no source patch is required.
 #
 # To use a local checkout instead (offline / air-gapped CI), pass
 #   -DBulletRoot=/path/to/bullet-2.75
@@ -42,11 +35,7 @@ if(BulletRoot)
     message(STATUS "Using local Bullet 2.75 at: ${BulletRoot} (download skipped)")
 else()
     include(FetchContent)
-    # Download only  we do NOT want MakeAvailable to add_subdirectory() Bullet's
-    # own top-level CMakeLists (it builds demos/extras). FetchContent treats a
-    # non-existent SOURCE_SUBDIR as "no project to configure", which is the
-    # documented way to populate without configuring. We add the three needed
-    # src/ libraries ourselves below.
+    # Download only  we do NOT want MakeAvailable to add_subdirectory() Bullet's own top-level CMakeLists (it builds demos/extras). FetchContent treats a non-existent SOURCE_SUBDIR as "no project to configure", which is the documented way to populate without configuring. We add the three needed src/ libraries ourselves below.
     set(_bullet_no_subdir "cmake/__umt_no_configure__")
     FetchContent_Declare(bullet275
         URL "${BULLET_2_75_URL}"
@@ -68,9 +57,7 @@ else()
 endif()
 # -----------------------------------------------------------------------------
 
-# Path to the UMT Unity package. Empty by default: the standard build produces a
-# standalone plugin in the build tree with no Unity coupling. Set this to a UMT
-# package folder to also copy the finished binary into its Plugins/ folder via a
+# Path to the UMT Unity package. Empty by default: the standard build produces a standalone plugin in the build tree with no Unity coupling. Set this to a UMT package folder to also copy the finished binary into its Plugins/ folder via a
 # POST_BUILD step so Unity can hot-reload it:
 #   -DUMT_PACKAGE_DIR=/path/to/com.candidumgames.unitymmdtools
 set(UMT_PACKAGE_DIR "" CACHE PATH "UMT Unity package folder to copy the built plugin into. Empty (default) skips the copy.")
@@ -93,8 +80,10 @@ add_subdirectory("${BulletRoot}/src/LinearMath" "${CMAKE_CURRENT_BINARY_DIR}/Bul
 add_subdirectory("${BulletRoot}/src/BulletCollision" "${CMAKE_CURRENT_BINARY_DIR}/Bullet/BulletCollision")
 add_subdirectory("${BulletRoot}/src/BulletDynamics" "${CMAKE_CURRENT_BINARY_DIR}/Bullet/BulletDynamics")
 
-# Unity's Web platform cannot load shared libraries at runtime: native code is linked statically into the IL2CPP/Emscripten player at build time. Every other target ships a hot-loadable shared library (.dll / .so).
-if(EMSCRIPTEN)
+# Static-library mode for hosts that link this plugin directly through their own build system (e.g. Unreal Engine via UBT) rather than loading a shared library at runtime. OFF by default so the Unity desktop/Android targets keep shipping a hot-loadable .dll / .so; the Web target is always static because Unity's IL2CPP/Emscripten player links native code statically at build time.
+option(UMT_STATIC "Build UMTNativePlugin as a static library linked directly by the host (e.g. Unreal Engine)." OFF)
+
+if(UMT_STATIC OR EMSCRIPTEN)
     add_library(UMTNativePlugin STATIC
         Source/NativeContext.cpp
         Source/NativeContext.h
@@ -104,6 +93,11 @@ else()
         Source/NativeContext.cpp
         Source/NativeContext.h
     )
+endif()
+
+# UMT_NATIVE_STATIC drops __declspec(dllexport) from the ABI macro so the archive exposes plain extern "C" symbols for the host's linker. Deliberately NOT set for the Emscripten static target, which still needs EMSCRIPTEN_KEEPALIVE to survive dead-stripping.
+if(UMT_STATIC)
+    target_compile_definitions(UMTNativePlugin PRIVATE UMT_NATIVE_STATIC)
 endif()
 
 target_include_directories(UMTNativePlugin PRIVATE
@@ -139,19 +133,31 @@ if(MSVC)
     target_compile_options(UMTNativePlugin PRIVATE /WX /Wall ${_MSVC_SUPPRESSED_WARNINGS} /permissive-)
 endif()
 
-# Artifact handed to Unity: normally the target's own binary. The Web build links statically, but target_link_libraries does not fold the Bullet archives into libUMTNativePlugin.a, so bundle them into one self-contained archive (llvm-ar's L modifier flattens member archives). Unity then links a single artifact, matching the .dll / .so layout of the other targets.
+# Artifact handed to the host: normally the target's own binary. But a static archive (the Web build, and any UMT_STATIC build) does NOT fold its Bullet dependencies in - target_link_libraries only records a usage requirement, so the target's own .lib/.a contains just NativeContext. Bundle UMTNativePlugin plus the three Bullet archives into ONE self-contained library so the host links a single artifact and needs no knowledge of Bullet.
 set(_plugin_artifact "$<TARGET_FILE:UMTNativePlugin>")
 
-if(EMSCRIPTEN)
+if(EMSCRIPTEN OR UMT_STATIC)
     set(_bundled_dir "${CMAKE_CURRENT_BINARY_DIR}/bundled")
     set(_plugin_artifact "${_bundled_dir}/$<TARGET_FILE_NAME:UMTNativePlugin>")
-    add_custom_command(TARGET UMTNativePlugin POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundled_dir}"
-        COMMAND "${CMAKE_COMMAND}" -E rm -f "${_plugin_artifact}"
-        COMMAND "${CMAKE_AR}" qcsL "${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
-        COMMENT "Bundling Bullet archives into a self-contained ${_plugin_artifact}"
-        VERBATIM
-    )
+    if(MSVC)
+        # MSVC's librarian merges member object files when handed other .lib files: `lib /OUT:merged.lib a.lib b.lib ...`. It runs inside MSBuild's toolchain environment, so lib.exe is on PATH.
+        add_custom_command(TARGET UMTNativePlugin POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundled_dir}"
+            COMMAND "${CMAKE_COMMAND}" -E rm -f "${_plugin_artifact}"
+            COMMAND lib.exe /NOLOGO "/OUT:${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
+            COMMENT "Bundling Bullet archives into a self-contained ${_plugin_artifact}"
+            VERBATIM
+        )
+    else()
+        # llvm-ar / emar: the L modifier flattens member archives into the output.
+        add_custom_command(TARGET UMTNativePlugin POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundled_dir}"
+            COMMAND "${CMAKE_COMMAND}" -E rm -f "${_plugin_artifact}"
+            COMMAND "${CMAKE_AR}" qcsL "${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
+            COMMENT "Bundling Bullet archives into a self-contained ${_plugin_artifact}"
+            VERBATIM
+        )
+    endif()
 endif()
 
 if(UMT_PACKAGE_DIR)

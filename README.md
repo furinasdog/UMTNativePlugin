@@ -7,6 +7,7 @@ Native plugin backing the MMD bullet physics in [Unity MMD Tools (UMT)](https://
 | Platform          | ABI         | Output                                   |
 | ----------------- | ----------- | ---------------------------------------- |
 | Windows           | x64         | `UMTNativePlugin.dll`             |
+| Windows (static)  | x64         | `UMTNativePlugin.lib` (`-DUMT_STATIC=ON`) |
 | Android           | arm64-v8a   | `libUMTNativePlugin.so`           |
 | Web               | WebAssembly | `libUMTNativePlugin.a`            |
 
@@ -51,6 +52,24 @@ A CMake build directory is single-toolchain : use a **separate build directory p
 cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 cmake --build build --config Release --target UMTNativePlugin
 ```
+
+### Windows x64 (static library, for Unreal Engine)
+
+Hosts that link the plugin directly through their own build system (e.g. Unreal Engine via UBT) consume it as a static library instead of loading a `.dll` at runtime. `-DUMT_STATIC=ON` builds `UMTNativePlugin.lib` (defining `UMT_NATIVE_STATIC`, which drops `__declspec(dllexport)` so the archive exposes plain `extern "C"` symbols). Use a separate build directory so it does not clobber the shared-library `build/`:
+
+```bash
+cmake -S . -B build-static -DUMT_STATIC=ON
+cmake --build build-static --config Release --target UMTNativePlugin
+```
+
+Add `-DBulletRoot=/path/to/bullet-2.75` (e.g. an existing `build/_deps/bullet275-src`) to reuse a local Bullet checkout and skip the download. A POST_BUILD step merges the three static Bullet archives into `UMTNativePlugin.lib` (via `lib.exe /OUT:` on MSVC), so the host links **one self-contained library** and needs no knowledge of Bullet:
+
+- `build-static/bundled/UMTNativePlugin.lib` — the merged, self-contained archive (link this)
+- `Source/API.h` + `Source/NativeContext.h` — the ABI surface (include these)
+
+> `build-static/Release/UMTNativePlugin.lib` is the *unmerged* target output (NativeContext only) — link `bundled/UMTNativePlugin.lib` instead.
+
+The library compiles against the dynamic CRT (`/MD`, `MSVCRT`), matching an Unreal editor build. In the Unreal MMD Tools plugin it is staged as `Plugins/UnrealMMDTools/External/UMTNativePlugin/lib/Win64/UMTNativePlugin.lib` (headers under `.../include`) and linked via `PublicAdditionalLibraries` in the editor module's `Build.cs`.
 
 ### Android arm64-v8a
 
@@ -118,6 +137,7 @@ Override the exact destination instead with `-DUnityPluginOutput=<path>`.
 
 | Option                  | Default                                    | Purpose                                                |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------ |
+| `UMT_STATIC`            | `OFF`                                      | Build a static library (`.lib`/`.a`) with plain `extern "C"` symbols for hosts that link it directly (e.g. Unreal Engine), instead of a shared library |
 | `BulletRoot`            | *(empty → auto-download)*                  | Local Bullet 2.75 root; set to skip the download       |
 | `BULLET_2_75_URL`       | Google Code archive zip                    | Bullet 2.75 archive URL                                |
 | `BULLET_2_75_SHA256`    | `fe2e369…61fe8f`                           | Pinned archive checksum                                |
@@ -133,6 +153,7 @@ Override the exact destination instead with `-DUnityPluginOutput=<path>`.
 The full surface is documented in [`Source/API.h`](Source/API.h).
 
 - `MMDBulletPhysicsCreate` / `MMDBulletPhysicsDestroy` : context lifecycle
+- `MMDBulletPhysicsSetConfig` : override ground-plane normal/constant, MMD→Unity unit scale, and scaled convex margin (defaults reproduce the historical hardcoded values)
 - `MMDBulletPhysicsReset` : deterministic reset from a seed
 - `MMDBulletPhysicsBuildRigidBodies` / `MMDBulletPhysicsBuildJoints` : world construction
 - `MMDBulletPhysicsBuildGround` / `MMDBulletPhysicsSetGroundCollisionEnabled` : ground plane
