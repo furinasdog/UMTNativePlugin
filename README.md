@@ -67,7 +67,7 @@ cmake --build build-android-arm64 --config Release
 
 ### Web (WebAssembly)
 
-Requires Ninja and an Emscripten SDK, and builds through the Emscripten toolchain file. **The Unity-bundled Emscripten is recommended** (`<...>/Editor/Data/PlaybackEngines/WebGLSupport/BuildTools/Emscripten`) since it matches the Editor's WebGL toolchain — but it ships no `.emscripten` config and is not on PATH, so set up a generated config, a writable cache, and PATH before configuring.
+Requires Ninja and an Emscripten SDK, and builds through the Emscripten toolchain file. **The Unity-bundled Emscripten is recommended** (`<...>/Editor/Data/PlaybackEngines/WebGLSupport/BuildTools/Emscripten`) since it matches the Editor's WebGL toolchain  but it ships no `.emscripten` config and is not on PATH, so set up a generated config, a writable cache, and PATH before configuring.
 
 ```powershell
 

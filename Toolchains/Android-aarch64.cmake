@@ -3,7 +3,7 @@
 #
 # Selected automatically by CMakeLists.txt when ANDROID_NDK is set, so it
 # does not need to be passed on the command line. The NDK root is NOT hard-coded
-# — pass it via ANDROID_NDK, e.g. from the repo root:
+#  pass it via ANDROID_NDK, e.g. from the repo root:
 #
 #   cmake -S . -B build-android-arm64 -G Ninja ^
 #       -DANDROID_NDK="PATH TO ANDROID NDK" ^

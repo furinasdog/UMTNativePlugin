@@ -42,7 +42,7 @@ if(BulletRoot)
     message(STATUS "Using local Bullet 2.75 at: ${BulletRoot} (download skipped)")
 else()
     include(FetchContent)
-    # Download only — we do NOT want MakeAvailable to add_subdirectory() Bullet's
+    # Download only  we do NOT want MakeAvailable to add_subdirectory() Bullet's
     # own top-level CMakeLists (it builds demos/extras). FetchContent treats a
     # non-existent SOURCE_SUBDIR as "no project to configure", which is the
     # documented way to populate without configuring. We add the three needed
