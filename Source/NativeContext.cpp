@@ -11,6 +11,7 @@
 #include <BulletCollision/CollisionShapes/btStaticPlaneShape.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
+#include <BulletDynamics/ConstraintSolver/btPoint2PointConstraint.h>
 #include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.h>
 #include <BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h>
 #include <BulletDynamics/Dynamics/btRigidBody.h>
@@ -39,6 +40,9 @@ namespace MMDBulletPhysics
         config.groundConstant = 0.0f;
         config.mmdUnitToUnityUnit = float(k_MMDUnitToUnityUnit);
         config.convexMargin = float(k_ScaledBulletDefaultConvexMargin);
+        config.springTranslationDamping = 1.0f;
+        config.springRotationDamping = 1.0f;
+        config.lockedTranslationReinforce = 0;
         return config;
     }
 
@@ -108,7 +112,7 @@ bool IsSimulated(MMDBulletPhysics::RigidBodyMode mode)
         mode == MMDBulletPhysics::RigidBodyMode::DynamicBoneAligned;
 }
 
-btScalar ComputeCcdSweptSphereRadius(const MMDBulletPhysics::RigidBodySimulationData& rigidBody)
+btScalar ComputeCCDSweptSphereRadius(const MMDBulletPhysics::RigidBodySimulationData& rigidBody)
 {
     switch (rigidBody.shape)
     {
@@ -122,14 +126,14 @@ btScalar ComputeCcdSweptSphereRadius(const MMDBulletPhysics::RigidBodySimulation
     }
 }
 
-void ConfigureCcd(btRigidBody* body, const MMDBulletPhysics::RigidBodySimulationData& rigidBody)
+void ConfigureCCD(btRigidBody* body, const MMDBulletPhysics::RigidBodySimulationData& rigidBody)
 {
     if (!IsSimulated(rigidBody.mode))
     {
         return;
     }
 
-    btScalar sweptSphereRadius = ComputeCcdSweptSphereRadius(rigidBody);
+    btScalar sweptSphereRadius = ComputeCCDSweptSphereRadius(rigidBody);
     if (sweptSphereRadius <= MMDBulletPhysics::k_MinCcdSweptSphereRadius)
     {
         return;
@@ -139,6 +143,7 @@ void ConfigureCcd(btRigidBody* body, const MMDBulletPhysics::RigidBodySimulation
     body->setCcdMotionThreshold(sweptSphereRadius);
 }
 
+// Shapes are built in the natural MMD/Unity body-local frame (Y-up): the capsule long axis runs along local Y and `size` is used directly as box half-extents (radius, MMD-Y extent, MMD-Z extent order). This keeps the native library coordinate-system-agnostic and byte-for-byte compatible with the Unity build; the host is responsible for orienting the rigid-body frame so this natural shape lands correctly. The Unreal port bakes a 90-degree shape-alignment rotation into the rigid-body transforms rather than rotating the shape here (see Plugins/UnrealMMDTools MMDPhysicsManager ShapeAlignmentRotation).
 btCollisionShape* CreateShape(const MMDBulletPhysics::RigidBodySimulationData& rigidBody, btScalar convexMargin)
 {
     switch (rigidBody.shape)
@@ -230,9 +235,10 @@ void ConfigureGenericConstraint(btGeneric6DofConstraint* constraint, const MMDBu
     constraint->setAngularUpperLimit(ToBulletVector(joint.rotationLimitMax));
 }
 
-void SetSpring(btGeneric6DofSpringConstraint* constraint, int index, float stiffness)
+void SetSpring(btGeneric6DofSpringConstraint* constraint, int index, float stiffness, float damping)
 {
     constraint->setStiffness(index, stiffness);
+    constraint->setDamping(index, damping);
     constraint->enableSpring(index, stiffness != 0.0f);
 }
 
@@ -304,7 +310,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
         {
             body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         }
-        ConfigureCcd(body, rigidBody);
+        ConfigureCCD(body, rigidBody);
 
         context->rigidBodies.push_back(body);
         context->world->addRigidBody(body, static_cast<short>(1 << rigidBody.groupIndex), rigidBody.collisionGroupMask);
@@ -329,12 +335,12 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
         {
             btGeneric6DofSpringConstraint* springConstraint = new btGeneric6DofSpringConstraint(bodyA, bodyB, frameInA, frameInB, true);
             ConfigureGenericConstraint(springConstraint, joint);
-            SetSpring(springConstraint, 0, joint.springTranslation[0]);
-            SetSpring(springConstraint, 1, joint.springTranslation[1]);
-            SetSpring(springConstraint, 2, joint.springTranslation[2]);
-            SetSpring(springConstraint, 3, joint.springRotation[0]);
-            SetSpring(springConstraint, 4, joint.springRotation[1]);
-            SetSpring(springConstraint, 5, joint.springRotation[2]);
+            SetSpring(springConstraint, 0, joint.springTranslation[0], context->config.springTranslationDamping);
+            SetSpring(springConstraint, 1, joint.springTranslation[1], context->config.springTranslationDamping);
+            SetSpring(springConstraint, 2, joint.springTranslation[2], context->config.springTranslationDamping);
+            SetSpring(springConstraint, 3, joint.springRotation[0], context->config.springRotationDamping);
+            SetSpring(springConstraint, 4, joint.springRotation[1], context->config.springRotationDamping);
+            SetSpring(springConstraint, 5, joint.springRotation[2], context->config.springRotationDamping);
             constraint = springConstraint;
         }
         else if (joint.type == MMDBulletPhysics::JointType::Generic6DOF)
@@ -350,6 +356,21 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
 
         context->world->addConstraint(constraint, false);
         context->constraints.push_back(constraint);
+
+        // Reinforce fully-locked translation (min == max == 0) with redundant point-to-point copies of the same equality: each copy adds one extra Gauss-Seidel solve of those rows per solver iteration, so spring-less locked chains survive fast motion at a low iteration count. The converged solution is identical to the locked 6DOF rows; only convergence improves. See NativeConfig::lockedTranslationReinforce.
+        const bool translationLocked =
+            joint.translationLimitMin[0] == 0.0f && joint.translationLimitMax[0] == 0.0f &&
+            joint.translationLimitMin[1] == 0.0f && joint.translationLimitMax[1] == 0.0f &&
+            joint.translationLimitMin[2] == 0.0f && joint.translationLimitMax[2] == 0.0f;
+        if (translationLocked)
+        {
+            for (int copy = 0; copy < context->config.lockedTranslationReinforce; ++copy)
+            {
+                btPoint2PointConstraint* reinforcement = new btPoint2PointConstraint(bodyA, bodyB, frameInA.getOrigin(), frameInB.getOrigin());
+                context->world->addConstraint(reinforcement, false);
+                context->constraints.push_back(reinforcement);
+            }
+        }
     }
 }
 
@@ -392,15 +413,16 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
         btTransform bodyTransform = ToBulletTransform(transforms + i * 16);
         body->setWorldTransform(bodyTransform);
         body->getMotionState()->setWorldTransform(bodyTransform);
-        body->setInterpolationWorldTransform(bodyTransform);
         if (clearVelocity)
         {
+            body->setInterpolationWorldTransform(bodyTransform);
             body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->setInterpolationLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->setInterpolationAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->clearForces();
         }
+        // With clearVelocity false the interpolation transform is intentionally left at its previous value: btDiscreteDynamicsWorld::saveKinematicState derives kinematic body velocity from (interpolationWorldTransform -> worldTransform) over the fixed substep, so a host pushing kinematic targets once per substep gives the constraint solver correct kinematic velocities instead of pure position error - this is how continuously-animated kinematic bodies behave in a live Bullet scene.
     }
 }
 

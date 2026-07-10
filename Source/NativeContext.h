@@ -24,6 +24,12 @@ namespace MMDBulletPhysics
         float mmdUnitToUnityUnit;
         /// <summary>Scaled convex collision margin applied to box/capsule shapes; historical default 0.04 * 0.08 = 0.0032.</summary>
         float convexMargin;
+        /// <summary>Bullet spring damping applied to the translation rows (0-2) of Spring6DOF joints; historical default 1.0. Bullet 2.75's spring motor drives toward targetVelocity = fps * (damping / solverIterations) * stiffness * displacement, so a host matching a reference simulation with different solver iterations sets this to iterations / referenceIterations.</summary>
+        float springTranslationDamping;
+        /// <summary>Bullet spring damping applied to the rotation rows (3-5) of Spring6DOF joints; historical default 1.0. Because rotational stiffness is scaled by lengthScale^2 (to track inertia) while the targetVelocity term above carries no inertia, a host running at a uniform length scale s relative to the reference sets this to iterations / (referenceIterations * s^2) to keep both the spring torque and the target velocity scale-invariant.</summary>
+        float springRotationDamping;
+        /// <summary>Number of redundant btPoint2PointConstraint copies added at the pivot of every joint whose translation limits are fully locked (min == max == 0); historical default 0 (none). Each copy gives those equality rows one extra Gauss-Seidel solve per solver iteration without touching rotation rows, so translation-locked chains (spring-less hair) survive fast motion at a low, MMD-matching iteration count instead of blowing apart. The copies constrain the exact same equality the locked 6DOF rows already impose, so the converged solution is unchanged - only the convergence rate improves.</summary>
+        int lockedTranslationReinforce;
     };
 
     /// <summary>Collider shape kind. Layout-compatible with managed <c>UMT.PMXRigidBody.Shape</c>.</summary>

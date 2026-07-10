@@ -107,7 +107,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetGroundCollisionEnabled(MMDBulletPhysics::N
 /// <param name="rigidBodyCount">Number of rigid bodies to update.</param>
 /// <param name="transform">World transforms to apply, one column-major 4x4 (16 floats) per rigid body.</param>
 /// <param name="rigidBodyIndices">Indices of the rigid bodies being updated.</param>
-/// <param name="clearVelocity">Whether to zero the linear and angular velocity.</param>
+/// <param name="clearVelocity">True: teleport - also zeroes the linear/angular velocity and resets the interpolation transform. False: leaves the interpolation transform at its previous value so Bullet's saveKinematicState derives kinematic-body velocity from the pushed motion over the next fixed substep (push once per substep for correct velocities).</param>
 MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
     MMDBulletPhysics::NativeContext* context,
     size_t rigidBodyCount,
