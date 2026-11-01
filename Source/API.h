@@ -37,7 +37,10 @@ MMDPHYSICSAPI MMDBulletPhysics::NativeContext* MMDBulletPhysicsCreate(
 MMDPHYSICSAPI void MMDBulletPhysicsDestroy(MMDBulletPhysics::NativeContext* context);
 
 /// <summary>
-/// Overrides the context's tunable parameters (ground-plane normal/constant, MMD-to-Unity unit scale, and scaled convex collision margin). Every field defaults to the historical hardcoded value at context creation, so callers that never invoke this get byte-for-byte the previous behavior. The ground fields take effect at the next <c>MMDBulletPhysicsBuildGround</c>; the convex margin takes effect at the next <c>MMDBulletPhysicsBuildRigidBodies</c>, so call this before those.
+/// Overrides the Spring2 context parameters. Structure layout is retained, but the old
+/// Bullet 2.75 motor damping values are not behavior-compatible; see NativeConfig.
+/// Ground/margin settings take effect when ground/bodies are built, and spring settings
+/// take effect when joints are built, so configure the context before world construction.
 /// </summary>
 /// <param name="context">Native context.</param>
 /// <param name="config">Configuration to copy into the context (pointer to a <c>NativeConfig</c>).</param>

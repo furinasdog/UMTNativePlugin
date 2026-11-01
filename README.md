@@ -1,6 +1,6 @@
 # UMTNativePlugin
 
-Native plugin backing the MMD bullet physics in [Unity MMD Tools (UMT)](https://github.com/CandidumGames/UnityMMDTools). It wraps **Bullet 2.75** behind a small, flat Cdecl ABI that the managed `UMT.MMDBulletPhysics` P/Invoke wrapper calls into.
+Native plugin backing the MMD bullet physics in [Unity MMD Tools (UMT)](https://github.com/CandidumGames/UnityMMDTools). It wraps **Bullet 3.07** (official tag commit `272c7099d3ba8ac9e8c142e361e8d4cf5d91b8f2`) behind a small, flat Cdecl ABI that the managed `UMT.MMDBulletPhysics` P/Invoke wrapper calls into.
 
 ## Targets
 
@@ -25,7 +25,7 @@ UMTNativePlugin/
 ├── Toolchains/
 │   └── Android-aarch64.cmake   NDK toolchain wrapper (auto-selected)
 ├── ThirdParty/
-│   └── bullet-2.75/            Optional local Bullet checkout : NOT committed
+│   └── bullet3/            Optional local Bullet checkout : NOT committed
 ├── LICENSE                     MIT (this project's own source)
 ├── .gitignore
 └── README.md
@@ -35,7 +35,8 @@ UMTNativePlugin/
 
 ## Prerequisites
 
-- **CMake** ≥ 3.16
+- **CMake** ≥ 3.24
+- **Git** ≥ 2.25 (fixed dependency commit, partial/sparse checkout)
 - A **C++17** compiler
   - Windows: **Visual Studio 2022+** (MSVC14.3+)
   - Android: an **Android NDK** (r27 recommended) and **Ninja**
@@ -62,7 +63,7 @@ cmake -S . -B build-static -DUMT_STATIC=ON
 cmake --build build-static --config Release --target UMTNativePlugin
 ```
 
-Add `-DBulletRoot=/path/to/bullet-2.75` (e.g. an existing `build/_deps/bullet275-src`) to reuse a local Bullet checkout and skip the download. A POST_BUILD step merges the three static Bullet archives into `UMTNativePlugin.lib` (via `lib.exe /OUT:` on MSVC), so the host links **one self-contained library** and needs no knowledge of Bullet:
+Add `-DBulletRoot=/path/to/bullet3` (e.g. an existing `build/_deps/bullet307-src`) to reuse a local Bullet checkout and skip the download. A POST_BUILD step merges the three static Bullet archives into `UMTNativePlugin.lib` (via `lib.exe /OUT:` on MSVC), so the host links **one self-contained library** and needs no knowledge of Bullet:
 
 - `build-static/bundled/UMTNativePlugin.lib` — the merged, self-contained archive (link this)
 - `Source/API.h` + `Source/NativeContext.h` — the ABI surface (include these)
@@ -70,6 +71,8 @@ Add `-DBulletRoot=/path/to/bullet-2.75` (e.g. an existing `build/_deps/bullet275
 > `build-static/Release/UMTNativePlugin.lib` is the *unmerged* target output (NativeContext only) — link `bundled/UMTNativePlugin.lib` instead.
 
 The library compiles against the dynamic CRT (`/MD`, `MSVCRT`), matching an Unreal editor build. In the Unreal MMD Tools plugin it is staged as `Plugins/UnrealMMDTools/External/UMTNativePlugin/lib/Win64/UMTNativePlugin.lib` (headers under `.../include`) and linked via `PublicAdditionalLibraries` in the editor module's `Build.cs`.
+
+`UMT_REPRODUCIBLE_MSVC=ON` normalizes native source paths to `B:/umt` and removes build timestamps. Honkai's preparation script enables it with MSVC 14.44; independently built project copies then produce identical archives. Map that virtual directory to the local UMT checkout when debugging native source, or disable the option for a local debug build.
 
 `MMDBulletPhysicsGetRigidBodyWorldTransforms` reads the current simulation poses for feedback operations such as mode-2 bone alignment. It uses the same indices and column-major float4x4 output layout as `GetRigidBodyMotionTransforms`. The original function keeps its motion-state interpolation behavior for existing display callers; passing an interpolated snapshot's position delta to `ShiftRigidBodyPosition`, which modifies the current body, mixes two simulation times. The new function is additive and does not change any existing structure layout or export.
 
@@ -118,10 +121,10 @@ cmake --build build-web
 `target_link_libraries` does not fold the Bullet archives into `libUMTNativePlugin.a`, so a POST_BUILD step bundles them into one self-contained archive for Unity to link.
 
 **Offline / air-gapped builds.**
-Point at a local Bullet 2.75 checkout to skip the download entirely:
+Point at a local pinned Bullet 3.07 Git checkout to skip the download entirely:
 
 ```bash
-cmake -S . -B build -DBulletRoot=/path/to/bullet-2.75
+cmake -S . -B build -DBulletRoot=/path/to/bullet3
 ```
 
 ## Output
@@ -148,9 +151,9 @@ Override the exact destination instead with `-DUnityPluginOutput=<path>`.
 | Option                  | Default                                    | Purpose                                                |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------ |
 | `UMT_STATIC`            | `OFF`                                      | Build a static library (`.lib`/`.a`) with plain `extern "C"` symbols for hosts that link it directly (e.g. Unreal Engine), instead of a shared library |
-| `BulletRoot`            | *(empty → auto-download)*                  | Local Bullet 2.75 root; set to skip the download       |
-| `BULLET_2_75_URL`       | Google Code archive zip                    | Bullet 2.75 archive URL                                |
-| `BULLET_2_75_SHA256`    | `fe2e369…61fe8f`                           | Pinned archive checksum                                |
+| `BulletRoot`            | *(empty → auto-download)*                  | Clean pinned Bullet 3.07 Git checkout; set to skip the download       |
+| `UMT_REPRODUCIBLE_MSVC` | `OFF` | Source-path/timestamp normalization; tested MSVC 14.44 |
+| `UMT_BUILD_TESTS` | `OFF` | Native current-world and Spring2 behavior regressions |
 | `UMT_PACKAGE_DIR`       | *(empty → no copy)*                        | UMT package to copy the binary into; empty skips copy  |
 | `UnityPluginOutput`     | `${UMT_PACKAGE_DIR}/Plugins/<platform>/<abi>` | Exact copy destination (overrides the above)        |
 | `ANDROID_NDK`           | *(unset)*                                  | Android NDK root; set to cross-compile for Android     |
@@ -158,12 +161,27 @@ Override the exact destination instead with `-DUnityPluginOutput=<path>`.
 | `ANDROID_PLATFORM`      | `android-24`                               | Android minimum API level                              |
 | `ANDROID_STL`           | `c++_static`                               | Android C++ runtime                                    |
 
+## Spring2 behavior migration
+
+This fork intentionally migrates the solver from Bullet 2.75 to the fixed official 3.07 commit. The C ABI names, field order and sizes remain compatible, including the existing interpolated snapshot API, but the old spring motor parameter semantics do not.
+
+- `Spring6DOF` uses `btGeneric6DofSpring2Constraint` with XYZ rotation order. All six spring axes remain enabled, including zero-stiffness axes, so relative-velocity damping remains active. Equilibrium is captured before the first step.
+- Pass the authored PMX translation and rotation stiffness values. Remove the old rotation-stiffness `lengthScale²` and inverse-square motor-damping conversions. Spring2 damping defaults to `.5` for translation and rotation; it uses viscous damping and Bullet's normal effective-mass/time-step safety limits.
+- Joint-linked body pairs do not collide. Every other pair still uses both original raw allowed-group masks; this does not disable general collisions or rewrite PMX metadata.
+- Convex margin defaults to `1e-6` world units. Bullet retains sphere/capsule radius semantics; it is not a uniform outward expansion for every shape. Fixed 60Hz, body damping, additional low-speed damping and the host's Mode2 alignment policy remain separate.
+
+The model data and any host-side unit conversion remain the host's responsibility. An existing Unity host using the old motor conversions must migrate those parameters or keep the previous native version; ABI compatibility alone does not preserve its physical response.
+
+The default configure obtains only the official repository's source/root-license files, pins the commit and rejects dirty dependency sources. `VERSION` and `BT_BULLET_VERSION` at the official 3.07 tag still say 3.05/305; commit verification is authoritative. Existing 2.75 caches are not accepted. A local `BulletRoot` must be a clean Git checkout at the same pinned commit. The preparation does not reset local modifications or change global Git settings.
+
+`UMT.Spring2Regression` checks real zero-stiffness damping against an unjointed world, an eccentric solid pendulum reaching and resting at an angular stop, and linked-only collision suppression with a nonlinked collision control. The old wrapper fails the zero-stiffness and linked tests; the pendulum is a bounded regression, not proof that every constrained model converges.
+
 ## API overview
 
 The full surface is documented in [`Source/API.h`](Source/API.h).
 
 - `MMDBulletPhysicsCreate` / `MMDBulletPhysicsDestroy` : context lifecycle
-- `MMDBulletPhysicsSetConfig` : override ground-plane normal/constant, MMD→Unity unit scale, and scaled convex margin (defaults reproduce the historical hardcoded values)
+- `MMDBulletPhysicsSetConfig` : override ground-plane normal/constant, MMD→Unity unit scale, margin and Spring2 viscous damping (see migration below)
 - `MMDBulletPhysicsReset` : deterministic reset from a seed
 - `MMDBulletPhysicsBuildRigidBodies` / `MMDBulletPhysicsBuildJoints` : world construction
 - `MMDBulletPhysicsBuildGround` / `MMDBulletPhysicsSetGroundCollisionEnabled` : ground plane
@@ -174,4 +192,4 @@ The full surface is documented in [`Source/API.h`](Source/API.h).
 ## License
 
 This project's own source (`Source/`, `CMakeLists.txt`, `Toolchains/`) is licensed under the [MIT License](LICENSE).
-Bullet is licensed under its own terms (zlib).
+Bullet is licensed under its original [zlib license](ThirdParty/Bullet-LICENSE.txt). The fixed dependency checkout also retains its upstream `LICENSE.txt`.

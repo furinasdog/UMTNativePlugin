@@ -4,10 +4,10 @@
 build*/
 cmake-build-*/
 
-# Bullet 2.75  fetched automatically by CMake (FetchContent) into the build
-# tree and used unmodified (no source patch). A local checkout under ThirdParty/
-# is optional (use -DBulletRoot=...); never commit it (large third-party tree, ~62 MB).
+# Bullet source is fetched at a fixed commit into the ignored build cache.
+# Keep old and optional local dependency trees out of this source repository.
 /ThirdParty/bullet-2.75/
+/ThirdParty/bullet3/
 
 # CMake artifacts that may leak outside the build dirs
 CMakeCache.txt

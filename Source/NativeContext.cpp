@@ -10,7 +10,7 @@
 #include <BulletCollision/CollisionShapes/btSphereShape.h>
 #include <BulletCollision/CollisionShapes/btStaticPlaneShape.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
-#include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
+#include <BulletDynamics/ConstraintSolver/btGeneric6DofSpring2Constraint.h>
 #include <BulletDynamics/ConstraintSolver/btPoint2PointConstraint.h>
 #include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.h>
 #include <BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h>
@@ -26,11 +26,11 @@ namespace MMDBulletPhysics
     constexpr btScalar k_MMDUnitToUnityUnit = btScalar(0.08);
     constexpr btScalar k_CCDSweptSphereScale = btScalar(0.8);
     constexpr btScalar k_MinCcdSweptSphereRadius = btScalar(0.0001);
-    // Bullet's default convex collision margin (0.04) is set for MMD-native-scale colliders. This pipeline scales everything to Unity units (x0.08), so the unscaled 0.04 margin hugely inflates the small colliders (e.g. a 0.1-radius capsule gains a 0.04 skin = +40%), causing spurious deep penetration at rest. Scale the margin into Unity space so it stays proportionally tiny.
-    constexpr btScalar k_BulletDefaultConvexMargin = btScalar(0.04);
-    constexpr btScalar k_ScaledBulletDefaultConvexMargin = k_BulletDefaultConvexMargin * k_MMDUnitToUnityUnit;
+    // Match the mature MMD Tools setup in world metres. Bullet keeps sphere/capsule
+    // radius semantics; this is not a uniform outward expansion of every shape.
+    constexpr btScalar k_ConvexMargin = btScalar(1.e-6);
 
-    // Config seeded into every context at creation so an untouched context reproduces the historical hardcoded behavior exactly.
+    // Spring2 uses physical viscous damping, unlike Bullet 2.75's spring motor coefficient.
     inline NativeConfig DefaultConfig()
     {
         NativeConfig config;
@@ -39,9 +39,9 @@ namespace MMDBulletPhysics
         config.groundNormal[2] = 0.0f;
         config.groundConstant = 0.0f;
         config.mmdUnitToUnityUnit = float(k_MMDUnitToUnityUnit);
-        config.convexMargin = float(k_ScaledBulletDefaultConvexMargin);
-        config.springTranslationDamping = 1.0f;
-        config.springRotationDamping = 1.0f;
+        config.convexMargin = float(k_ConvexMargin);
+        config.springTranslationDamping = 0.5f;
+        config.springRotationDamping = 0.5f;
         config.lockedTranslationReinforce = 0;
         return config;
     }
@@ -227,7 +227,8 @@ void MMDBulletPhysics::NativeContext::ClearWorldObjects()
     shapes.clear();
 }
 
-void ConfigureGenericConstraint(btGeneric6DofConstraint* constraint, const MMDBulletPhysics::NativeJointData& joint)
+template<class Constraint>
+void ConfigureGenericConstraint(Constraint* constraint, const MMDBulletPhysics::NativeJointData& joint)
 {
     constraint->setLinearLowerLimit(ToBulletVector(joint.translationLimitMin));
     constraint->setLinearUpperLimit(ToBulletVector(joint.translationLimitMax));
@@ -235,11 +236,12 @@ void ConfigureGenericConstraint(btGeneric6DofConstraint* constraint, const MMDBu
     constraint->setAngularUpperLimit(ToBulletVector(joint.rotationLimitMax));
 }
 
-void SetSpring(btGeneric6DofSpringConstraint* constraint, int index, float stiffness, float damping)
+void SetSpring(btGeneric6DofSpring2Constraint* constraint, int index, float stiffness, float damping)
 {
     constraint->setStiffness(index, stiffness);
     constraint->setDamping(index, damping);
-    constraint->enableSpring(index, stiffness != 0.0f);
+    // A zero-stiffness axis still applies relative-velocity damping, as in MMD Tools.
+    constraint->enableSpring(index, true);
 }
 
 MMDPHYSICSAPI MMDBulletPhysics::NativeContext* MMDBulletPhysicsCreate(
@@ -333,7 +335,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
         btTypedConstraint* constraint = nullptr;
         if (joint.type == MMDBulletPhysics::JointType::Spring6DOF)
         {
-            btGeneric6DofSpringConstraint* springConstraint = new btGeneric6DofSpringConstraint(bodyA, bodyB, frameInA, frameInB, true);
+            btGeneric6DofSpring2Constraint* springConstraint = new btGeneric6DofSpring2Constraint(bodyA, bodyB, frameInA, frameInB, RO_XYZ);
             ConfigureGenericConstraint(springConstraint, joint);
             SetSpring(springConstraint, 0, joint.springTranslation[0], context->config.springTranslationDamping);
             SetSpring(springConstraint, 1, joint.springTranslation[1], context->config.springTranslationDamping);
@@ -341,6 +343,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             SetSpring(springConstraint, 3, joint.springRotation[0], context->config.springRotationDamping);
             SetSpring(springConstraint, 4, joint.springRotation[1], context->config.springRotationDamping);
             SetSpring(springConstraint, 5, joint.springRotation[2], context->config.springRotationDamping);
+            springConstraint->setEquilibriumPoint();
             constraint = springConstraint;
         }
         else if (joint.type == MMDBulletPhysics::JointType::Generic6DOF)
@@ -354,7 +357,8 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             std::abort();
         }
 
-        context->world->addConstraint(constraint, false);
+        // Suppress only this linked pair; all other PMX group/mask filtering remains active.
+        context->world->addConstraint(constraint, true);
         context->constraints.push_back(constraint);
 
         // Reinforce fully-locked translation (min == max == 0) with redundant point-to-point copies of the same equality: each copy adds one extra Gauss-Seidel solve of those rows per solver iteration, so spring-less locked chains survive fast motion at a low iteration count. The converged solution is identical to the locked 6DOF rows; only convergence improves. See NativeConfig::lockedTranslationReinforce.
@@ -367,7 +371,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             for (int copy = 0; copy < context->config.lockedTranslationReinforce; ++copy)
             {
                 btPoint2PointConstraint* reinforcement = new btPoint2PointConstraint(bodyA, bodyB, frameInA.getOrigin(), frameInB.getOrigin());
-                context->world->addConstraint(reinforcement, false);
+                context->world->addConstraint(reinforcement, true);
                 context->constraints.push_back(reinforcement);
             }
         }

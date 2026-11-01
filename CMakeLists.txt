@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 
 # NDK root for Android cross-compilation, passed on the command line, e.g.
 # -DANDROID_NDK=<...>.
@@ -16,46 +16,25 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# --- Bullet 2.75 acquisition --------------------------------------------------
-# Bullet 2.75 was removed from the Bullet GitHub repo and survives only as an archive on the Google Code mirror, so a git submodule is not an option. Fetch the zip and verify its SHA256. The Bullet source is used unmodified: the only behavioural tweak this pipeline needs (a collision margin scaled into Unity units) is applied explicitly in code via btCollisionShape::setMargin() in Source/NativeContext.cpp, so no source patch is required.
-#
-# To use a local checkout instead (offline / air-gapped CI), pass
-#   -DBulletRoot=/path/to/bullet-2.75
-# and the download is skipped entirely.
-set(BulletRoot "" CACHE PATH "Local Bullet 2.75 root. Leave empty to auto-download.")
-
-set(BULLET_2_75_URL
-    "https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com/bullet/bullet-2.75.zip"
-    CACHE STRING "Bullet 2.75 archive URL")
-set(BULLET_2_75_SHA256
-    "fe2e369593b034c00a1245676edd8417a58c8030a94e061220f0c228ca61fe8f"
-    CACHE STRING "Bullet 2.75 archive SHA256")
-
-if(BulletRoot)
-    message(STATUS "Using local Bullet 2.75 at: ${BulletRoot} (download skipped)")
-else()
-    include(FetchContent)
-    # Download only  we do NOT want MakeAvailable to add_subdirectory() Bullet's own top-level CMakeLists (it builds demos/extras). FetchContent treats a non-existent SOURCE_SUBDIR as "no project to configure", which is the documented way to populate without configuring. We add the three needed src/ libraries ourselves below.
-    set(_bullet_no_subdir "cmake/__umt_no_configure__")
-    FetchContent_Declare(bullet275
-        URL "${BULLET_2_75_URL}"
-        URL_HASH SHA256=${BULLET_2_75_SHA256}
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SOURCE_SUBDIR "${_bullet_no_subdir}"
-    )
-    FetchContent_MakeAvailable(bullet275)
-    set(BulletRoot "${bullet275_SOURCE_DIR}")
-
-    # Fail loudly if a future Bullet archive ever ships this placeholder path
-    # (which would make MakeAvailable configure it and build the demos).
-    if(EXISTS "${BulletRoot}/${_bullet_no_subdir}/CMakeLists.txt")
-        message(FATAL_ERROR
-            "Bullet unexpectedly contains '${_bullet_no_subdir}/CMakeLists.txt'; "
-            "the SOURCE_SUBDIR placeholder is no longer empty. Pick a different one.")
-    endif()
-    message(STATUS "Fetched Bullet 2.75 to: ${BulletRoot}")
+# Fixed official 3.07 tag commit. Its upstream VERSION/BT_BULLET_VERSION still say
+# 3.05/305, so verify the commit and clean source instead of trusting that string.
+set(UMT_BULLET_COMMIT "272c7099d3ba8ac9e8c142e361e8d4cf5d91b8f2")
+set(BulletRoot "" CACHE PATH "Clean checkout of the pinned Bullet 3.07 commit; empty fetches src into the build cache.")
+find_package(Git REQUIRED)
+set(_bullet_fetch FALSE)
+if(NOT BulletRoot)
+    set(BulletRoot "${CMAKE_CURRENT_BINARY_DIR}/_deps/bullet307-src")
+    set(_bullet_fetch TRUE)
 endif()
-# -----------------------------------------------------------------------------
+execute_process(COMMAND "${CMAKE_COMMAND}"
+    "-DBULLET_SOURCE_DIR=${BulletRoot}" "-DBULLET_COMMIT=${UMT_BULLET_COMMIT}"
+    "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" "-DBULLET_FETCH_ALLOWED=${_bullet_fetch}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchPinnedBullet.cmake"
+    RESULT_VARIABLE _bullet_result)
+if(NOT _bullet_result EQUAL 0)
+    message(FATAL_ERROR "Pinned Bullet preparation failed; existing source/cache files were preserved.")
+endif()
+message(STATUS "Using Bullet 3.07 commit ${UMT_BULLET_COMMIT} at ${BulletRoot}")
 
 # Path to the UMT Unity package. Empty by default: the standard build produces a standalone plugin in the build tree with no Unity coupling. Set this to a UMT package folder to also copy the finished binary into its Plugins/ folder via a
 # POST_BUILD step so Unity can hot-reload it:
@@ -71,7 +50,7 @@ else()
 endif()
 set(UnityPluginOutput "${_default_unity_plugin_output}" CACHE PATH "Unity plugin output directory")
 
-set(BULLET_VERSION 2.75)
+set(BULLET_VERSION 3.07)
 set(BULLET_PHYSICS_SOURCE_DIR "${BulletRoot}")
 
 add_compile_definitions(BT_USE_DOUBLE_PRECISION)
@@ -100,7 +79,7 @@ if(UMT_STATIC)
     target_compile_definitions(UMTNativePlugin PRIVATE UMT_NATIVE_STATIC)
 endif()
 
-target_include_directories(UMTNativePlugin PRIVATE
+target_include_directories(UMTNativePlugin SYSTEM PRIVATE
     "${BulletRoot}/src"
 )
 
@@ -133,6 +112,17 @@ if(MSVC)
     target_compile_options(UMTNativePlugin PRIVATE /WX /Wall ${_MSVC_SUPPRESSED_WARNINGS} /permissive-)
 endif()
 
+option(UMT_REPRODUCIBLE_MSVC "Normalize MSVC source paths/timestamps (tested with MSVC 14.44)." OFF)
+if(MSVC AND UMT_REPRODUCIBLE_MSVC)
+    # MSVC pathmap compares native backslashes; a forward-slash prefix is silently ineffective.
+    file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" _umt_source_native)
+    foreach(_target UMTNativePlugin LinearMath BulletCollision BulletDynamics)
+        target_compile_options(${_target} PRIVATE /experimental:deterministic /Brepro
+            "/pathmap:${_umt_source_native}=B:/umt")
+        set_property(TARGET ${_target} APPEND PROPERTY STATIC_LIBRARY_OPTIONS /Brepro)
+    endforeach()
+endif()
+
 # Artifact handed to the host: normally the target's own binary. But a static archive (the Web build, and any UMT_STATIC build) does NOT fold its Bullet dependencies in - target_link_libraries only records a usage requirement, so the target's own .lib/.a contains just NativeContext. Bundle UMTNativePlugin plus the three Bullet archives into ONE self-contained library so the host links a single artifact and needs no knowledge of Bullet.
 set(_plugin_artifact "$<TARGET_FILE:UMTNativePlugin>")
 
@@ -144,7 +134,7 @@ if(EMSCRIPTEN OR UMT_STATIC)
         add_custom_command(TARGET UMTNativePlugin POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundled_dir}"
             COMMAND "${CMAKE_COMMAND}" -E rm -f "${_plugin_artifact}"
-            COMMAND lib.exe /NOLOGO "/OUT:${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
+            COMMAND lib.exe /NOLOGO /Brepro "/OUT:${_plugin_artifact}" "$<TARGET_FILE:UMTNativePlugin>" "$<TARGET_FILE:LinearMath>" "$<TARGET_FILE:BulletCollision>" "$<TARGET_FILE:BulletDynamics>"
             COMMENT "Bundling Bullet archives into a self-contained ${_plugin_artifact}"
             VERBATIM
         )
@@ -181,4 +171,9 @@ if(UMT_BUILD_TESTS)
     target_compile_definitions(UMTWorldSnapshotTest PRIVATE UMT_NATIVE_STATIC)
     target_link_libraries(UMTWorldSnapshotTest PRIVATE UMTNativePlugin)
     add_test(NAME UMT.WorldSnapshot COMMAND UMTWorldSnapshotTest)
+    add_executable(UMTSpring2Regression Tests/Spring2Regression.cpp)
+    target_include_directories(UMTSpring2Regression PRIVATE Source)
+    target_compile_definitions(UMTSpring2Regression PRIVATE UMT_NATIVE_STATIC)
+    target_link_libraries(UMTSpring2Regression PRIVATE UMTNativePlugin)
+    add_test(NAME UMT.Spring2Regression COMMAND UMTSpring2Regression)
 endif()
