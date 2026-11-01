@@ -451,6 +451,19 @@ MMDPHYSICSAPI void MMDBulletPhysicsGetRigidBodyMotionTransforms(
     }
 }
 
+MMDPHYSICSAPI void MMDBulletPhysicsGetRigidBodyWorldTransforms(
+    MMDBulletPhysics::NativeContext* context,
+    size_t rigidBodyCount,
+    const int* rigidBodyIndices,
+    float* transforms)
+{
+    for (size_t i = 0; i < rigidBodyCount; ++i)
+    {
+        const btTransform& bodyTransform = context->rigidBodies[rigidBodyIndices[i]]->getWorldTransform();
+        WriteManagedTransform(bodyTransform, transforms + i * 16);
+    }
+}
+
 MMDPHYSICSAPI void MMDBulletPhysicsShiftRigidBodyPosition(
     MMDBulletPhysics::NativeContext* context,
     int rigidBodyIndex,

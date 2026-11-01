@@ -130,6 +130,21 @@ MMDPHYSICSAPI void MMDBulletPhysicsGetRigidBodyMotionTransforms(
     float* transforms);
 
 /// <summary>
+/// Reads the current simulation world transforms, without motion-state interpolation.
+/// Use this snapshot for simulation feedback such as dynamic bone-aligned position correction.
+/// GetRigidBodyMotionTransforms retains its interpolated display-pose behavior for existing callers.
+/// </summary>
+/// <param name="context">Native context.</param>
+/// <param name="rigidBodyCount">Number of rigid bodies to read.</param>
+/// <param name="rigidBodyIndices">Indices of the rigid bodies to read.</param>
+/// <param name="transforms">Output buffer receiving one column-major 4x4 (16 floats) per rigid body.</param>
+MMDPHYSICSAPI void MMDBulletPhysicsGetRigidBodyWorldTransforms(
+    MMDBulletPhysics::NativeContext* context,
+    size_t rigidBodyCount,
+    const int* rigidBodyIndices,
+    float* transforms);
+
+/// <summary>
 /// Shifts a rigid body's position by a world-space delta without resetting velocity.
 /// Counterpart to the managed <c>ShiftRigidBodyPosition(int, float3)</c>.
 /// </summary>

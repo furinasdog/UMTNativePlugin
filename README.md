@@ -71,6 +71,16 @@ Add `-DBulletRoot=/path/to/bullet-2.75` (e.g. an existing `build/_deps/bullet275
 
 The library compiles against the dynamic CRT (`/MD`, `MSVCRT`), matching an Unreal editor build. In the Unreal MMD Tools plugin it is staged as `Plugins/UnrealMMDTools/External/UMTNativePlugin/lib/Win64/UMTNativePlugin.lib` (headers under `.../include`) and linked via `PublicAdditionalLibraries` in the editor module's `Build.cs`.
 
+`MMDBulletPhysicsGetRigidBodyWorldTransforms` reads the current simulation poses for feedback operations such as mode-2 bone alignment. It uses the same indices and column-major float4x4 output layout as `GetRigidBodyMotionTransforms`. The original function keeps its motion-state interpolation behavior for existing display callers; passing an interpolated snapshot's position delta to `ShiftRigidBodyPosition`, which modifies the current body, mixes two simulation times. The new function is additive and does not change any existing structure layout or export.
+
+The native regression exercises 120 moving mode-2 corrections and verifies exact current-world attachment, while retaining the old motion-state behavior as a negative control:
+
+```bash
+cmake -S . -B build-static -DUMT_STATIC=ON -DUMT_BUILD_TESTS=ON
+cmake --build build-static --config Release
+ctest --test-dir build-static -C Release --output-on-failure
+```
+
 ### Android arm64-v8a
 
 Requires Ninja and an Android NDK. `CMakeLists.txt` activates the Android toolchain
