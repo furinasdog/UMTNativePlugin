@@ -233,6 +233,68 @@ void AngularLimitPendulum()
             "Angular limit retained a visible steady-state limit cycle");
 }
 
+
+void AlignedRestWake()
+{
+    auto world = Create({0, -9.8f, 0});
+    std::array<RigidBodySimulationData, 2> bodies = {Body(0, 0, 0, 0, true), Body(1, 0, .1f, .05f)};
+    bodies[1].mode = RigidBodyMode::DynamicBoneAligned;
+    bodies[1].shape = RigidBodyShape::Capsule;
+    bodies[1].size[0] = .008f; bodies[1].size[1] = .12f;
+    MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), int(bodies.size()));
+    auto joint = FreeJoint(JointType::Spring6DOF, 0, 1);
+    Identity(joint.frameInB, 0, -.1f, -.05f);
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        joint.translationLimitMin[axis] = joint.translationLimitMax[axis] = 0;
+        joint.rotationLimitMin[axis] = joint.rotationLimitMax[axis] = 0;
+    }
+    joint.rotationLimitMin[0] = float(-20 * Pi / 180);
+    joint.rotationLimitMax[0] = float(20 * Pi / 180);
+    MMDBulletPhysicsBuildJoints(world.get(), &joint, 1);
+    const int anchor = 0, child = 1;
+    Matrix target{}; Identity(target.data());
+    auto frame = [&]() {
+        MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 1, target.data(), &anchor, false);
+        MMDBulletPhysicsStepSimulation(world.get(), Step);
+        auto pose = Read(world.get(), child);
+        // PMX Mode2 retains the animated pivot; only its rotation is simulated.
+        const float shift[3] = {pose[12] - target[12] - pose[4] * .1f - pose[8] * .05f,
+                               pose[13] - target[13] - pose[5] * .1f - pose[9] * .05f,
+                               pose[14] - target[14] - pose[6] * .1f - pose[10] * .05f};
+        MMDBulletPhysicsShiftRigidBodyPosition(world.get(), child, shift);
+        return Read(world.get(), child);
+    };
+    std::vector<double> speeds;
+    Matrix previous = Read(world.get(), child);
+    for (int step = 0; step < 1200; ++step)
+    {
+        const auto current = frame();
+        if (step >= 1080) speeds.push_back(AngularSpeed(previous, current));
+        previous = current;
+    }
+    const double restP95 = P95(speeds);
+    std::printf("aligned_rest angular_p95_deg_s=%.9g\n", restP95);
+    Require(restP95 < .01, "An unchanged kinematic anchor kept a Mode2 pendant visibly moving");
+    const auto resting = previous;
+    const float angle = float(40 * Pi / 180);
+    target[5] = target[10] = std::cos(angle); target[6] = std::sin(angle); target[9] = -std::sin(angle);
+    for (int step = 0; step < 180; ++step) previous = frame();
+    const auto q0 = Quaternion(resting), q1 = Quaternion(previous);
+    double dot = 0; for (int i = 0; i < 4; ++i) dot += q0[i] * q1[i];
+    const double response = 2 * std::acos(std::min(1., std::abs(dot))) * 180 / Pi;
+    std::printf("aligned_wake response_deg=%.9g\n", response);
+    Require(response > 10, "Moving a kinematic endpoint did not wake its resting pendant");
+    // Reset to the original bind pose after rest; the next gravity steps must run again.
+    const int indices[2] = {0, 1};
+    float reset[32]; Identity(reset); Identity(reset + 16, 0, .1f, .05f); Identity(target.data());
+    MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 2, reset, indices, true);
+    MMDBulletPhysicsReset(world.get(), 0);
+    for (int step = 0; step < 60; ++step) previous = frame();
+    Require(std::abs(std::atan2(-double(previous[9]), double(previous[10]))) > .1,
+            "Reset left dynamic bodies asleep instead of restoring gravity simulation");
+}
+
 void LinkedOnlyCollision()
 {
     auto world = Create({ 0, 0, 0 });
@@ -262,10 +324,11 @@ void LinkedOnlyCollision()
 
 int main()
 {
-    const std::array<std::pair<const char*, void (*)()>, 3> tests = {{
+    const std::array<std::pair<const char*, void (*)()>, 4> tests = {{
         { "zero_stiffness_damping", &ZeroStiffnessDamping },
         { "angular_limit_pendulum", &AngularLimitPendulum },
-        { "linked_only_collision", &LinkedOnlyCollision }
+        { "linked_only_collision", &LinkedOnlyCollision },
+        { "aligned_rest_wake", &AlignedRestWake }
     }};
     int failures = 0;
     for (const auto& test : tests)

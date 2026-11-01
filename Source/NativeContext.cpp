@@ -306,11 +306,11 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
         info.m_restitution = rigidBody.restitution;
 
         btRigidBody* body = new btRigidBody(info);
-        body->setSleepingThresholds(0.0f, 0.0f);
-        body->setActivationState(DISABLE_DEACTIVATION);
+        // Keep Bullet's normal sleeping thresholds; static contacts can then settle as whole islands.
         if (!IsSimulated(rigidBody.mode))
         {
             body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+            body->forceActivationState(ISLAND_SLEEPING);
         }
         ConfigureCCD(body, rigidBody);
 
@@ -410,11 +410,29 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
     const int* rigidBodyIndices,
     bool clearVelocity)
 {
+    bool movedKinematic = false;
     for (size_t i = 0; i < rigidBodyCount; ++i)
     {
         int rigidBodyIndex = rigidBodyIndices[i];
         btRigidBody* body = context->rigidBodies[rigidBodyIndex];
         btTransform bodyTransform = ToBulletTransform(transforms + i * 16);
+        if (body->isKinematicObject())
+        {
+            const btTransform& previous = body->getWorldTransform();
+            const bool moved = previous.getOrigin() != bodyTransform.getOrigin() || !(previous.getBasis() == bodyTransform.getBasis());
+            body->forceActivationState(moved ? DISABLE_DEACTIVATION : ISLAND_SLEEPING);
+            movedKinematic |= moved;
+            if (!moved)
+            {
+                // A stopped kinematic collider must neither retain its last velocity nor wake resting contacts.
+                body->setLinearVelocity(btVector3(0, 0, 0));
+                body->setAngularVelocity(btVector3(0, 0, 0));
+                body->setInterpolationWorldTransform(bodyTransform);
+                body->setInterpolationLinearVelocity(btVector3(0, 0, 0));
+                body->setInterpolationAngularVelocity(btVector3(0, 0, 0));
+            }
+        }
+        else body->activate(true);
         body->setWorldTransform(bodyTransform);
         body->getMotionState()->setWorldTransform(bodyTransform);
         if (clearVelocity)
@@ -426,7 +444,13 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
             body->setInterpolationAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->clearForces();
         }
-        // With clearVelocity false the interpolation transform is intentionally left at its previous value: btDiscreteDynamicsWorld::saveKinematicState derives kinematic body velocity from (interpolationWorldTransform -> worldTransform) over the fixed substep, so a host pushing kinematic targets once per substep gives the constraint solver correct kinematic velocities instead of pure position error - this is how continuously-animated kinematic bodies behave in a live Bullet scene.
+        // Moving kinematic targets retain the previous interpolation transform for Bullet's velocity calculation.
+    }
+    if (movedKinematic)
+    {
+        // Constraint links do not themselves wake sleeping bodies when a kinematic endpoint moves.
+        for (int i = 0; i < context->rigidBodies.size(); ++i)
+            if (!context->rigidBodies[i]->isStaticOrKinematicObject()) context->rigidBodies[i]->activate(true);
     }
 }
 
