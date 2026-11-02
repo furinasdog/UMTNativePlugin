@@ -20,6 +20,8 @@
 #include <LinearMath/btTransform.h>
 
 #include <cstdlib>
+#include <cmath>
+#include <limits>
 
 namespace MMDBulletPhysics
 {
@@ -61,6 +63,9 @@ namespace MMDBulletPhysics
         btAlignedObjectArray<btDefaultMotionState*> motionStates;
         btAlignedObjectArray<btRigidBody*> rigidBodies;
         btAlignedObjectArray<btTypedConstraint*> constraints;
+        struct AnchoredWeld { int parent, child; btTransform local; };
+        btAlignedObjectArray<AnchoredWeld> anchoredWelds;
+        btAlignedObjectArray<bool> canAnchorWeld;
 
         NativeContext(const float* gravity, int solverIterations, int maxSubStepsValue, float fixedTimeStepValue);
 
@@ -181,6 +186,8 @@ MMDBulletPhysics::NativeContext::NativeContext(const float* gravity, int solverI
 {
     world->setGravity(ToBulletVector(gravity));
     world->getSolverInfo().m_numIterations = solverIterations;
+    // Regularize redundant small-body constraint loops without changing their authored limits.
+    world->getSolverInfo().m_globalCfm = .001;
 }
 
 MMDBulletPhysics::NativeContext::~NativeContext()
@@ -202,6 +209,8 @@ void MMDBulletPhysics::NativeContext::ClearWorldObjects()
     }
 
     constraints.clear();
+    anchoredWelds.clear();
+    canAnchorWeld.clear();
 
     for (int i = rigidBodies.size() - 1; i >= 0; --i)
     {
@@ -315,6 +324,9 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
         ConfigureCCD(body, rigidBody);
 
         context->rigidBodies.push_back(body);
+        // Bound Mode2 bodies retain their host-side animated-position policy.
+        context->canAnchorWeld.push_back(rigidBody.mode == MMDBulletPhysics::RigidBodyMode::Dynamic
+            || (rigidBody.mode == MMDBulletPhysics::RigidBodyMode::DynamicBoneAligned && rigidBody.noRelatedBone));
         context->world->addRigidBody(body, static_cast<short>(1 << rigidBody.groupIndex), rigidBody.collisionGroupMask);
     }
 }
@@ -324,6 +336,37 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
     const MMDBulletPhysics::NativeJointData* joints,
     int jointCount)
 {
+    // A zero-DOF weld rooted at a kinematic body has an exact prescribed transform.
+    // Reduce these anchored chains before solving the remaining dynamic system.
+    for (int pass = 0; pass < context->rigidBodies.size(); ++pass)
+    {
+        bool changed = false;
+        for (int i = 0; i < jointCount; ++i)
+        {
+            const auto& joint = joints[i];
+            bool locked = true;
+            for (int axis = 0; axis < 3; ++axis)
+                locked &= joint.translationLimitMin[axis] == 0 && joint.translationLimitMax[axis] == 0
+                    && joint.rotationLimitMin[axis] == 0 && joint.rotationLimitMax[axis] == 0;
+            if (!locked) continue;
+            const int a = joint.rigidBodyAIndex, b = joint.rigidBodyBIndex;
+            int parent = -1, child = -1;
+            btTransform local;
+            if (context->rigidBodies[a]->isKinematicObject() && !context->rigidBodies[b]->isStaticOrKinematicObject())
+            { parent = a; child = b; local = ToBulletTransform(joint.frameInA) * ToBulletTransform(joint.frameInB).inverse(); }
+            else if (context->rigidBodies[b]->isKinematicObject() && !context->rigidBodies[a]->isStaticOrKinematicObject())
+            { parent = b; child = a; local = ToBulletTransform(joint.frameInB) * ToBulletTransform(joint.frameInA).inverse(); }
+            if (parent < 0 || !context->canAnchorWeld[child]) continue;
+            auto* body = context->rigidBodies[child];
+            body->setMassProps(0, btVector3(0, 0, 0));
+            body->updateInertiaTensor();
+            body->setCollisionFlags((body->getCollisionFlags() & ~btCollisionObject::CF_STATIC_OBJECT) | btCollisionObject::CF_KINEMATIC_OBJECT);
+            body->forceActivationState(ISLAND_SLEEPING);
+            context->anchoredWelds.push_back({parent, child, local});
+            changed = true;
+        }
+        if (!changed) break;
+    }
     for (int i = 0; i < jointCount; ++i)
     {
         const MMDBulletPhysics::NativeJointData& joint = joints[i];
@@ -419,7 +462,11 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
         if (body->isKinematicObject())
         {
             const btTransform& previous = body->getWorldTransform();
-            const bool moved = previous.getOrigin() != bodyTransform.getOrigin() || !(previous.getBasis() == bodyTransform.getBasis());
+            // Float ABI roundoff must not wake every dynamic island after animation stops.
+            const btScalar precision = std::numeric_limits<float>::epsilon();
+            bool moved = (previous.getOrigin() - bodyTransform.getOrigin()).length2() > precision * precision;
+            for (int axis = 0; axis < 3; ++axis)
+                moved |= (previous.getBasis().getRow(axis) - bodyTransform.getBasis().getRow(axis)).length2() > precision * precision;
             body->forceActivationState(moved ? DISABLE_DEACTIVATION : ISLAND_SLEEPING);
             movedKinematic |= moved;
             if (!moved)
@@ -434,6 +481,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
         }
         else body->activate(true);
         body->setWorldTransform(bodyTransform);
+        body->updateInertiaTensor();
         body->getMotionState()->setWorldTransform(bodyTransform);
         if (clearVelocity)
         {
@@ -508,5 +556,12 @@ MMDPHYSICSAPI void MMDBulletPhysicsShiftRigidBodyPosition(
 
 MMDPHYSICSAPI void MMDBulletPhysicsStepSimulation(MMDBulletPhysics::NativeContext* context, float elapsedTime)
 {
+    for (int i = 0; i < context->anchoredWelds.size(); ++i)
+    {
+        const auto& weld = context->anchoredWelds[i];
+        float target[16];
+        WriteManagedTransform(context->rigidBodies[weld.parent]->getWorldTransform() * weld.local, target);
+        MMDBulletPhysicsSetRigidBodyTransforms(context, 1, target, &weld.child, false);
+    }
     context->world->stepSimulation(elapsedTime, context->maxSubSteps, context->fixedTimeStep);
 }

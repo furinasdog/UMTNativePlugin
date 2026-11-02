@@ -236,6 +236,7 @@ void AngularLimitPendulum()
 
 void AlignedRestWake()
 {
+    // Mode2 remains permanent here; free-body release is not its correctness criterion.
     auto world = Create({0, -9.8f, 0});
     std::array<RigidBodySimulationData, 2> bodies = {Body(0, 0, 0, 0, true), Body(1, 0, .1f, .05f)};
     bodies[1].mode = RigidBodyMode::DynamicBoneAligned;
@@ -295,6 +296,52 @@ void AlignedRestWake()
             "Reset left dynamic bodies asleep instead of restoring gravity simulation");
 }
 
+
+void ExactAnchoredWeld()
+{
+    auto world = Create({0, -9.8f, 0});
+    std::array<RigidBodySimulationData, 3> bodies = {
+        Body(0, 0, 0, 0, true), Body(1, .1f, .4f, .3f), Body(2, .3f, .7f, .1f)};
+    bodies[1].size[0] = .005f;
+    MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), int(bodies.size()));
+    std::array<NativeJointData, 2> joints = {FreeJoint(JointType::Spring6DOF, 0, 1), FreeJoint(JointType::Spring6DOF, 1, 2)};
+    Identity(joints[0].frameInB, -.1f, -.4f, -.3f);
+    Identity(joints[1].frameInB, -.2f, -.3f, .2f);
+    for (auto& joint : joints)
+        for (int axis = 0; axis < 3; ++axis)
+            joint.translationLimitMin[axis] = joint.translationLimitMax[axis]
+                = joint.rotationLimitMin[axis] = joint.rotationLimitMax[axis] = 0;
+    MMDBulletPhysicsBuildJoints(world.get(), joints.data(), int(joints.size()));
+    const int anchor = 0;
+    Matrix target{}; Identity(target.data());
+    double error = 0;
+    for (int frame = 0; frame < 180; ++frame)
+    {
+        const float angle = frame < 60 ? 0.f : frame < 120 ? .7f : -.4f;
+        target[0] = target[10] = std::cos(angle); target[2] = -std::sin(angle); target[8] = std::sin(angle);
+        target[12] = frame < 60 ? 0.f : .8f;
+        MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 1, target.data(), &anchor, false);
+        MMDBulletPhysicsStepSimulation(world.get(), Step);
+        for (int body = 1; body < 3; ++body)
+        {
+            const auto actual = Read(world.get(), body);
+            const float* rest = bodies[body].restWorldTransform;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const double expected = target[12 + axis] + target[axis] * rest[12]
+                    + target[4 + axis] * rest[13] + target[8 + axis] * rest[14];
+                error = std::max(error, std::abs(actual[12 + axis] - expected));
+            }
+            for (int column = 0; column < 3; ++column)
+                for (int row = 0; row < 3; ++row)
+                    error = std::max(error, std::abs(double(actual[4 * column + row]) - target[4 * column + row]));
+        }
+    }
+    std::printf("anchored_weld rest_and_moving_frame_error=%.9g\n", error);
+    Require(error < 1.e-6, "An anchored zero-DOF weld drifted from its prescribed rigid transform");
+}
+
+
 void LinkedOnlyCollision()
 {
     auto world = Create({ 0, 0, 0 });
@@ -324,11 +371,12 @@ void LinkedOnlyCollision()
 
 int main()
 {
-    const std::array<std::pair<const char*, void (*)()>, 4> tests = {{
+    const std::array<std::pair<const char*, void (*)()>, 5> tests = {{
         { "zero_stiffness_damping", &ZeroStiffnessDamping },
         { "angular_limit_pendulum", &AngularLimitPendulum },
         { "linked_only_collision", &LinkedOnlyCollision },
-        { "aligned_rest_wake", &AlignedRestWake }
+        { "aligned_rest_wake", &AlignedRestWake },
+        { "exact_anchored_weld", &ExactAnchoredWeld }
     }};
     int failures = 0;
     for (const auto& test : tests)
