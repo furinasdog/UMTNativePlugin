@@ -423,6 +423,16 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             }
         }
     }
+
+    // Let authored high angular damping on constrained secondary motion suppress residual micro-motion by sleeping.
+    // This sleep approximation retains source contacts and joint limits, including their remaining error.
+    for (int index = 0; index < context->rigidBodies.size(); ++index)
+    {
+        btRigidBody* body = context->rigidBodies[index];
+        if (!body->isStaticOrKinematicObject() && body->getNumConstraintRefs() > 0 &&
+            body->getAngularDamping() >= btScalar(.9f))
+            body->setSleepingThresholds(body->getLinearSleepingThreshold(), btScalar(3));
+    }
 }
 
 MMDPHYSICSAPI void MMDBulletPhysicsBuildGround(

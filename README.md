@@ -170,9 +170,9 @@ This fork intentionally migrates the solver from Bullet 2.75 to the fixed offici
 - Joint-linked body pairs do not collide. Every other pair still uses both original raw allowed-group masks; this does not disable general collisions or rewrite PMX metadata.
 - Convex margin defaults to `1e-6` world units. Bullet retains sphere/capsule radius semantics; it is not a uniform outward expansion for every shape. Fixed 60Hz, body damping, additional low-speed damping and the host's Mode2 alignment policy remain separate.
 
-Dynamic bodies use Bullet's ordinary island sleeping rather than forced `DISABLE_DEACTIVATION` with zero thresholds. An unchanged kinematic target has zero velocity and a sleeping activation state, so it does not wake resting contacts indefinitely. A changed kinematic target explicitly wakes this model context's dynamic bodies before stepping; direct dynamic teleports wake their body as well. This retains authored collision masks, joints, mass and damping. `UMT.Spring2Regression` includes a Mode2 pendant resting, reacting to a moved anchor, and resuming gravity after reset. Models whose active dynamics do not meet Bullet's sleep criteria remain active.
+Dynamic bodies use Bullet's standard island sleeping, with threshold selection described in the [jointed high-angular-damping sleep policy](#jointed-high-angular-damping-sleep-policy). An unchanged kinematic target has zero velocity and a sleeping activation state, so it does not wake resting contacts indefinitely. A changed kinematic target explicitly wakes this model context's dynamic bodies before stepping; direct dynamic teleports wake their body as well. This retains authored collision masks, joints, mass and damping. `UMT.Spring2Regression` includes a Mode2 pendant resting, reacting to a moved anchor, and resuming gravity after reset. An island remains active until its bodies meet their configured sleep criteria.
 
-Kinematic movement is compared within the float matrix ABI's machine epsilon rather than exact matrix equality. Rotation roundoff as small as `7e-15` to `1.5e-8` previously reactivated every dynamic body each frame after motion stopped. `UMT.KinematicWake` observes real Bullet activation: alternating sub-epsilon rotation roundoff keeps a resting body asleep, while a real 10-micrometre translation wakes it. This does not change sleeping thresholds, body velocities, damping, collision masks, or Mode2 alignment.
+Kinematic movement is compared within the float matrix ABI's machine epsilon rather than exact matrix equality. Rotation roundoff as small as `7e-15` to `1.5e-8` previously reactivated every dynamic body each frame after motion stopped. `UMT.KinematicWake` observes real Bullet activation: alternating sub-epsilon rotation roundoff keeps a resting body asleep, while a real 10-micrometre translation wakes it. The float movement-detection fix itself does not change sleeping thresholds, body velocities, damping, collision masks, or Mode2 alignment; threshold selection is the separate [jointed high-angular-damping sleep policy](#jointed-high-angular-damping-sleep-policy).
 
 The solver keeps global CFM `0.001`; Bullet applies that default according to each constraint implementation, so it is not a uniform per-row joint override. Fully zero-limit six-axis weld chains rooted at a kinematic body are evaluated from their exact relative joint frames; their source rigid-body mass/mode records and collision masks are not rewritten. The reduced solver bodies have no independent degrees of freedom. Bound Mode2 bodies are excluded from this reduction so the host's animated position remains authoritative. World inertia tensors are refreshed after prescribed transforms or reduction.
 
@@ -187,6 +187,25 @@ The model data and any host-side unit conversion remain the host's responsibilit
 The default configure obtains only the official repository's source/root-license files, pins the commit and rejects dirty dependency sources. `VERSION` and `BT_BULLET_VERSION` at the official 3.07 tag still say 3.05/305; commit verification is authoritative. Existing 2.75 caches are not accepted. A local `BulletRoot` must be a clean Git checkout at the same pinned commit. The preparation does not reset local modifications or change global Git settings.
 
 `UMT.Spring2Regression` checks real zero-stiffness damping against an unjointed world, an eccentric solid pendulum reaching and resting at an angular stop, and linked-only collision suppression with a nonlinked collision control. The old wrapper fails the zero-stiffness and linked tests; the pendulum is a bounded regression, not proof that every constrained model converges.
+
+## Jointed high-angular-damping sleep policy
+
+Bullet's default angular sleeping threshold remains `1` rad/s for unselected bodies. After joint construction, the runtime changes only the angular threshold to `3` rad/s for actual dynamic bodies with at least one Bullet constraint reference and an actual, already-clamped angular damping value of at least `btScalar(.9f)`:
+
+```cpp
+if (!body->isStaticOrKinematicObject()
+    && body->getNumConstraintRefs() > 0
+    && body->getAngularDamping() >= btScalar(.9f))
+{
+    body->setSleepingThresholds(body->getLinearSleepingThreshold(), btScalar(3));
+}
+```
+
+This uses standard Bullet island sleeping as a resting approximation for authored high-angular-damping, joint-constrained secondary motion. It does not eliminate incompatible source constraints or collider overlap: nonzero pivot, angular-limit and contact residuals can remain in a sleeping pose. Each body's original linear threshold (default `.8`) and the global deactivation time (`2` seconds) are retained. Original kinematic movement/reset wake-up, source data, collision filtering, joints, mass, authored damping, solver settings and permanent Mode2 alignment are unchanged. There are no character, bone-name or model-ID conditions.
+
+Local validation passed the recorded real-failure MemoryD/E native-call replays, the required motion canaries, and four-model offline 30/60FPS motion/stop, permanent-Mode2 and reset checks. Jointed zero/low-damping spinners and an unconstrained high-damping driven rotor retain threshold `1` and keep moving; applying `3` universally failed an undamped-rotation canary and is not the policy. These offline checks do not establish acceptance of continuous live SDK input or the real UE camera path.
+
+Truly held kinematic input can allow an island to sleep. Continuous SDK pose changes still use the original wake path and can repeatedly wake the dynamic bodies, so held-input convergence is not a guarantee under persistent tracker noise. The original 10-micrometre Set-transform test still wakes all dynamic bodies; resumed motion can include the remaining constraint/contact conflict, rather than preserving the input's amplitude. No input filtering or wake condition was changed.
 
 ## API overview
 
