@@ -188,6 +188,10 @@ MMDBulletPhysics::NativeContext::NativeContext(const float* gravity, int solverI
     world->getSolverInfo().m_numIterations = solverIterations;
     // Regularize redundant small-body constraint loops without changing their authored limits.
     world->getSolverInfo().m_globalCfm = .001;
+    // Use Bullet's standard two-direction, velocity-independent friction basis.
+    world->getSolverInfo().m_solverMode |= SOLVER_USE_2_FRICTION_DIRECTIONS
+        | SOLVER_ENABLE_FRICTION_DIRECTION_CACHING
+        | SOLVER_DISABLE_VELOCITY_DEPENDENT_FRICTION_DIRECTION;
 }
 
 MMDBulletPhysics::NativeContext::~NativeContext()
