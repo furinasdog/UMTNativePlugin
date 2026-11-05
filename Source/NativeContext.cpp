@@ -460,7 +460,9 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetGroundCollisionEnabled(MMDBulletPhysics::N
         : flags | btCollisionObject::CF_NO_CONTACT_RESPONSE);
 }
 
-MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
+namespace
+{
+bool SetBodyTransforms(
     MMDBulletPhysics::NativeContext* context,
     size_t rigidBodyCount,
     const float* transforms,
@@ -508,12 +510,29 @@ MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
         }
         // Moving kinematic targets retain the previous interpolation transform for Bullet's velocity calculation.
     }
-    if (movedKinematic)
-    {
-        // Constraint links do not themselves wake sleeping bodies when a kinematic endpoint moves.
-        for (int i = 0; i < context->rigidBodies.size(); ++i)
-            if (!context->rigidBodies[i]->isStaticOrKinematicObject()) context->rigidBodies[i]->activate(true);
-    }
+    return movedKinematic;
+}
+
+void WakeDynamicBodies(MMDBulletPhysics::NativeContext* context)
+{
+#ifdef UMT_TEST_KINEMATIC_WAKE_PASS
+    UMT_TEST_KINEMATIC_WAKE_PASS();
+#endif
+    // Constraint links do not themselves wake sleeping bodies when a kinematic endpoint moves.
+    for (int i = 0; i < context->rigidBodies.size(); ++i)
+        if (!context->rigidBodies[i]->isStaticOrKinematicObject()) context->rigidBodies[i]->activate(true);
+}
+}
+
+MMDPHYSICSAPI void MMDBulletPhysicsSetRigidBodyTransforms(
+    MMDBulletPhysics::NativeContext* context,
+    size_t rigidBodyCount,
+    const float* transforms,
+    const int* rigidBodyIndices,
+    bool clearVelocity)
+{
+    if (SetBodyTransforms(context, rigidBodyCount, transforms, rigidBodyIndices, clearVelocity))
+        WakeDynamicBodies(context);
 }
 
 MMDPHYSICSAPI void MMDBulletPhysicsGetRigidBodyMotionTransform(
@@ -570,12 +589,15 @@ MMDPHYSICSAPI void MMDBulletPhysicsShiftRigidBodyPosition(
 
 MMDPHYSICSAPI void MMDBulletPhysicsStepSimulation(MMDBulletPhysics::NativeContext* context, float elapsedTime)
 {
+    bool movedKinematic = false;
     for (int i = 0; i < context->anchoredWelds.size(); ++i)
     {
         const auto& weld = context->anchoredWelds[i];
         float target[16];
         WriteManagedTransform(context->rigidBodies[weld.parent]->getWorldTransform() * weld.local, target);
-        MMDBulletPhysicsSetRigidBodyTransforms(context, 1, target, &weld.child, false);
+        movedKinematic |= SetBodyTransforms(context, 1, target, &weld.child, false);
     }
+    // Preserve chained transforms in order; wake once before solving instead of once per follower.
+    if (movedKinematic) WakeDynamicBodies(context);
     context->world->stepSimulation(elapsedTime, context->maxSubSteps, context->fixedTimeStep);
 }
