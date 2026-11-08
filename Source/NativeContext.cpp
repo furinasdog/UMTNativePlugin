@@ -1,5 +1,6 @@
 #include "NativeContext.h"
 #include "API.h"
+#include "PmxContactWorld.h"
 
 #include <BulletCollision/BroadphaseCollision/btDbvtBroadphase.h>
 #include <BulletCollision/CollisionDispatch/btCollisionDispatcher.h>
@@ -178,7 +179,7 @@ MMDBulletPhysics::NativeContext::NativeContext(const float* gravity, int solverI
     dispatcher(new btCollisionDispatcher(collisionConfiguration)),
     broadphase(new btDbvtBroadphase()),
     solver(new btSequentialImpulseConstraintSolver()),
-    world(new btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration)),
+    world(new PmxContactWorld(dispatcher, broadphase, solver, collisionConfiguration)),
     groundRigidBody(nullptr),
     maxSubSteps(maxSubStepsValue),
     fixedTimeStep(fixedTimeStepValue),
@@ -188,6 +189,7 @@ MMDBulletPhysics::NativeContext::NativeContext(const float* gravity, int solverI
     world->getSolverInfo().m_numIterations = solverIterations;
     // Regularize redundant small-body constraint loops without changing their authored limits.
     world->getSolverInfo().m_globalCfm = .001;
+    world->getSolverInfo().m_splitImpulsePenetrationThreshold = 0;
     // Use Bullet's standard two-direction, velocity-independent friction basis.
     world->getSolverInfo().m_solverMode |= SOLVER_USE_2_FRICTION_DIRECTIONS
         | SOLVER_ENABLE_FRICTION_DIRECTION_CACHING
@@ -206,6 +208,7 @@ MMDBulletPhysics::NativeContext::~NativeContext()
 
 void MMDBulletPhysics::NativeContext::ClearWorldObjects()
 {
+    static_cast<PmxContactWorld*>(world)->Clear();
     for (int i = constraints.size() - 1; i >= 0; --i)
     {
         world->removeConstraint(constraints[i]);
@@ -433,6 +436,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             body->getAngularDamping() >= btScalar(.9f))
             body->setSleepingThresholds(body->getLinearSleepingThreshold(), btScalar(3));
     }
+    static_cast<PmxContactWorld*>(context->world)->Configure(context->rigidBodies, context->constraints);
 }
 
 MMDPHYSICSAPI void MMDBulletPhysicsBuildGround(

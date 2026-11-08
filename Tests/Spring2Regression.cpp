@@ -32,9 +32,9 @@ void Identity(float* matrix, float x = 0, float y = 0, float z = 0)
     matrix[12] = x; matrix[13] = y; matrix[14] = z;
 }
 
-World Create(const std::array<float, 3>& gravity)
+World Create(const std::array<float, 3>& gravity, float fixedStep = Step)
 {
-    World world(MMDBulletPhysicsCreate(gravity.data(), 20, 1, Step), &MMDBulletPhysicsDestroy);
+    World world(MMDBulletPhysicsCreate(gravity.data(), 20, 1, fixedStep), &MMDBulletPhysicsDestroy);
     Require(bool(world), "Cannot create native world");
     NativeConfig config{};
     config.groundNormal[1] = 1;
@@ -342,6 +342,58 @@ void ExactAnchoredWeld()
 }
 
 
+void ObstructedAttachment()
+{
+    constexpr float ContactStep = 1.f / 30.f;
+    auto world = Create({0, -9.8f, 0}, ContactStep);
+    std::array<RigidBodySimulationData, 3> bodies = {
+        Body(0, 0, 2, 0, true), Body(1, 0, 1.8f, 0), Body(2, .4f, 1.65f, 0, true)};
+    bodies[1].shape = RigidBodyShape::Capsule;
+    bodies[1].size[0] = .02f; bodies[1].size[1] = .4f; bodies[1].mass = .25f;
+    bodies[1].linearDamping = bodies[1].angularDamping = .95f;
+    bodies[1].groupIndex = 1; bodies[1].collisionGroupMask = 1 << 2;
+    bodies[2].size[0] = .15f; bodies[2].groupIndex = 2; bodies[2].collisionGroupMask = 1 << 1;
+    MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), int(bodies.size()));
+    auto joint = FreeJoint(JointType::Spring6DOF, 0, 1);
+    Identity(joint.frameInB, 0, .2f, 0);
+    for (int axis = 0; axis < 3; ++axis) {
+        joint.translationLimitMin[axis] = joint.translationLimitMax[axis] = 0;
+        joint.rotationLimitMin[axis] = -.08726646f; joint.rotationLimitMax[axis] = .08726646f;
+        joint.springRotation[axis] = .5f;
+    }
+    MMDBulletPhysicsBuildJoints(world.get(), &joint, 1);
+    Matrix obstacle{}; const int obstacleIndex = 2;
+    double maximumDepth = 0, maximumPivotError = 0;
+    for (int frame = 0; frame < 360; ++frame) {
+        const float x = .4f - .32f * std::min(1.f, float(frame) / 60.f);
+        Identity(obstacle.data(), x, 1.65f, 0);
+        MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 1, obstacle.data(), &obstacleIndex, false);
+        MMDBulletPhysicsStepSimulation(world.get(), ContactStep);
+        const auto pose = Read(world.get(), 1);
+        if (frame < 240) continue;
+        double along = 0;
+        for (int axis = 0; axis < 3; ++axis) along += (obstacle[12 + axis] - pose[12 + axis]) * pose[4 + axis];
+        along = std::clamp(along, -.2, .2);
+        double distance2 = 0, pivot2 = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            const double distance = pose[12 + axis] + along * pose[4 + axis] - obstacle[12 + axis];
+            const double pivot = pose[12 + axis] + .2 * pose[4 + axis] - (axis == 1 ? 2. : 0.);
+            distance2 += distance * distance; pivot2 += pivot * pivot;
+        }
+        maximumDepth = std::max(maximumDepth, .17 - std::sqrt(distance2));
+        maximumPivotError = std::max(maximumPivotError, std::sqrt(pivot2));
+    }
+    std::printf("obstructed_attachment penetration_m=%.9g pivot_error_m=%.9g\n", maximumDepth, maximumPivotError);
+    Require(maximumDepth < .001, "Obstructed attachment remains inside a kinematic collider");
+    Require(maximumPivotError < .001, "Contact correction detached the attachment pivot");
+    Identity(obstacle.data(), .4f, 1.65f, 0);
+    MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 1, obstacle.data(), &obstacleIndex, false);
+    for (int frame = 0; frame < 360; ++frame) MMDBulletPhysicsStepSimulation(world.get(), ContactStep);
+    const auto returned = Read(world.get(), 1);
+    const double lean = std::acos(std::clamp(double(returned[5]), -1., 1.));
+    Require(lean < .1, "Unobstructed attachment did not return within its original angular range");
+}
+
 void LinkedOnlyCollision()
 {
     auto world = Create({ 0, 0, 0 });
@@ -371,12 +423,13 @@ void LinkedOnlyCollision()
 
 int main()
 {
-    const std::array<std::pair<const char*, void (*)()>, 5> tests = {{
+    const std::array<std::pair<const char*, void (*)()>, 6> tests = {{
         { "zero_stiffness_damping", &ZeroStiffnessDamping },
         { "angular_limit_pendulum", &AngularLimitPendulum },
         { "linked_only_collision", &LinkedOnlyCollision },
         { "aligned_rest_wake", &AlignedRestWake },
-        { "exact_anchored_weld", &ExactAnchoredWeld }
+        { "exact_anchored_weld", &ExactAnchoredWeld },
+        { "obstructed_attachment", &ObstructedAttachment }
     }};
     int failures = 0;
     for (const auto& test : tests)
