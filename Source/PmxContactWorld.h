@@ -103,4 +103,22 @@ public:
         }
         btDiscreteDynamicsWorld::solveConstraints(info);
     }
+    void integrateTransforms(btScalar timeStep) override
+    {
+        btDiscreteDynamicsWorld::integrateTransforms(timeStep);
+        for (const auto& root : anchors) {
+            const bool anchorIsA = &root.joint->getRigidBodyA() == root.kinematic;
+            auto& body = anchorIsA ? root.joint->getRigidBodyB() : root.joint->getRigidBodyA();
+            const auto& anchorFrame = anchorIsA ? root.joint->getFrameOffsetA() : root.joint->getFrameOffsetB();
+            const auto& bodyFrame = anchorIsA ? root.joint->getFrameOffsetB() : root.joint->getFrameOffsetA();
+            const auto& anchorPose = root.kinematic->getWorldTransform();
+            auto pose = body.getWorldTransform();
+            const btVector3 arm = pose.getBasis() * bodyFrame.getOrigin();
+            // A translation-locked kinematic pivot has an exact position even at a limited solver budget.
+            pose.setOrigin(anchorPose * anchorFrame.getOrigin() - arm);
+            body.setCenterOfMassTransform(pose);
+            body.setLinearVelocity(root.kinematic->getVelocityInLocalPoint(anchorPose.getBasis() * anchorFrame.getOrigin())
+                - body.getAngularVelocity().cross(arm));
+        }
+    }
 };

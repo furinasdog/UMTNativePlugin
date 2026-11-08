@@ -385,7 +385,7 @@ void ObstructedAttachment()
     }
     std::printf("obstructed_attachment penetration_m=%.9g pivot_error_m=%.9g\n", maximumDepth, maximumPivotError);
     Require(maximumDepth < .001, "Obstructed attachment remains inside a kinematic collider");
-    Require(maximumPivotError < .001, "Contact correction detached the attachment pivot");
+    Require(maximumPivotError < .000001, "Contact correction detached the attachment pivot");
     Identity(obstacle.data(), .4f, 1.65f, 0);
     MMDBulletPhysicsSetRigidBodyTransforms(world.get(), 1, obstacle.data(), &obstacleIndex, false);
     for (int frame = 0; frame < 360; ++frame) MMDBulletPhysicsStepSimulation(world.get(), ContactStep);
