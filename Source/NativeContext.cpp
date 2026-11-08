@@ -322,6 +322,7 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
         info.m_restitution = rigidBody.restitution;
 
         btRigidBody* body = new btRigidBody(info);
+        body->setUserIndex2(rigidBody.relatedBoneIndex);
         // Keep Bullet's normal sleeping thresholds; static contacts can then settle as whole islands.
         if (!IsSimulated(rigidBody.mode))
         {

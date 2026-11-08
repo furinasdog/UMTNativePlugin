@@ -62,6 +62,15 @@ public:
             auto* manifold = getDispatcher()->getManifoldByIndexInternal(i);
             const auto* a = manifold->getBody0(); const auto* b = manifold->getBody1();
             if (a->isStaticOrKinematicObject() == b->isStaticOrKinematicObject()) continue;
+            const auto* collider = a->isStaticOrKinematicObject() ? a : b;
+            const auto* dynamic = a->isStaticOrKinematicObject() ? b : a;
+            const int index = dynamic->getUserIndex();
+            if (index < 0 || size_t(index) >= owners.size() || owners[size_t(index)] < 0) continue;
+            const size_t owner = size_t(owners[size_t(index)]);
+            const auto* anchor = anchors[owner].kinematic;
+            // Existing overlapping proxies on the attachment's own bone retain their authored response.
+            if (collider == anchor || (collider->getUserIndex2() >= 0
+                && collider->getUserIndex2() == anchor->getUserIndex2())) continue;
             bool contact = false;
             for (int p = 0; p < manifold->getNumContacts(); ++p) {
                 auto& point = manifold->getContactPoint(p);
@@ -70,15 +79,7 @@ public:
                 point.m_contactCFM = 0; point.m_contactERP = .8;
                 contact |= point.getDistance() < .002;
             }
-            if (!contact) continue;
-            for (int side = 0; side < 2; ++side) {
-                const auto* dynamic = side ? b : a; const auto* collider = side ? a : b;
-                const int index = dynamic->getUserIndex();
-                if (!collider->isStaticOrKinematicObject() || dynamic->isStaticOrKinematicObject()
-                    || index < 0 || size_t(index) >= owners.size()) continue;
-                const int owner = owners[size_t(index)];
-                if (owner >= 0 && collider != anchors[size_t(owner)].kinematic) touching[size_t(owner)] = true;
-            }
+            if (contact) touching[owner] = true;
         }
         for (size_t i = 0; i < anchors.size(); ++i) {
             auto& root = anchors[i];
