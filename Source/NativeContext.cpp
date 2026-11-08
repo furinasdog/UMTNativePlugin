@@ -8,6 +8,7 @@
 #include <BulletCollision/CollisionShapes/btBoxShape.h>
 #include <BulletCollision/CollisionShapes/btCapsuleShape.h>
 #include <BulletCollision/CollisionShapes/btCollisionShape.h>
+#include <BulletCollision/CollisionShapes/btConvexHullShape.h>
 #include <BulletCollision/CollisionShapes/btSphereShape.h>
 #include <BulletCollision/CollisionShapes/btStaticPlaneShape.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
@@ -339,6 +340,78 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
     }
 }
 
+MMDPHYSICSAPI bool MMDBulletPhysicsSetCollisionHull(
+    MMDBulletPhysics::NativeContext* context, int bodyIndex, const float* xyz, int pointCount)
+{
+    if (!context || bodyIndex < 0 || bodyIndex >= context->rigidBodies.size()
+        || !xyz || pointCount < 4 || pointCount > 65536 || context->constraints.size()) return false;
+    for (int i = 0; i < pointCount * 3; ++i) if (!std::isfinite(xyz[i])) return false;
+    auto* body = context->rigidBodies[bodyIndex];
+    auto* hull = new btConvexHullShape();
+    for (int i = 0; i < pointCount; ++i) hull->addPoint(btVector3(xyz[i*3], xyz[i*3+1], xyz[i*3+2]), false);
+    hull->setMargin(btScalar(.01) * context->config.mmdUnitToUnityUnit);
+    hull->optimizeConvexHull();
+    hull->recalcLocalAabb();
+    context->world->getBroadphase()->getOverlappingPairCache()->cleanProxyFromPairs(body->getBroadphaseHandle(), context->dispatcher);
+    body->setCollisionShape(hull);
+    context->shapes.push_back(hull);
+    if (body->getInvMass() > 0) {
+        const btScalar mass = 1 / body->getInvMass();
+        btVector3 inertia;
+        hull->calculateLocalInertia(mass, inertia);
+        body->setMassProps(mass, inertia);
+        body->updateInertiaTensor();
+    }
+    context->world->updateSingleAabb(body);
+    return true;
+}
+
+// A redundant anchored loop can contain a nonzero lock incompatible with its other path.
+// Calibrate only a proven conflict at bind, retaining valid authored offsets and dynamic pivots.
+btTransform CalibrateLockedFrame(MMDBulletPhysics::NativeContext* context,
+    const MMDBulletPhysics::NativeJointData* joints, int count, int index, const std::vector<int>& roots)
+{
+    const auto& x = joints[index];
+    const int a = x.rigidBodyAIndex, b = x.rigidBodyBIndex;
+    auto frame = ToBulletTransform(x.frameInA);
+    for (int axis = 0; axis < 3; ++axis)
+        if (x.springTranslation[axis] != 0 || x.springRotation[axis] != 0) return frame;
+    if (x.type != MMDBulletPhysics::JointType::Spring6DOF
+        || !context->rigidBodies[a]->isKinematicObject() || context->rigidBodies[b]->isStaticOrKinematicObject()) return frame;
+    const auto dynamicFrame = ToBulletTransform(x.frameInB);
+    const auto wa = context->rigidBodies[a]->getWorldTransform() * frame;
+    const auto wb = context->rigidBodies[b]->getWorldTransform() * dynamicFrame;
+    const auto relative = wa.inverseTimes(wb);
+    bool rotationFixed = relative.getRotation().getAngleShortestPath() < 1.e-5;
+    for (int axis = 0; axis < 3; ++axis)
+        rotationFixed &= x.rotationLimitMin[axis] == 0 && x.rotationLimitMax[axis] == 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        const btScalar target = x.translationLimitMin[axis], bind = relative.getOrigin()[axis];
+        if (target == 0 || target != x.translationLimitMax[axis] || btFabs(target - bind) < 1.e-6) continue;
+        bool conflict = false;
+        for (int other = 0; other < count && !conflict; ++other) {
+            const auto& y = joints[other];
+            const int anchor = y.rigidBodyAIndex;
+            if (other == index || y.rigidBodyBIndex != b || !context->rigidBodies[anchor]->isKinematicObject()
+                || roots[anchor] != roots[a]) continue;
+            const auto ya = context->rigidBodies[anchor]->getWorldTransform() * ToBulletTransform(y.frameInA);
+            const auto yb = context->rigidBodies[b]->getWorldTransform() * ToBulletTransform(y.frameInB);
+            const auto yr = ya.inverseTimes(yb);
+            const btScalar slack = rotationFixed ? 0 : 2 * (dynamicFrame.getOrigin() - ToBulletTransform(y.frameInB).getOrigin()).length();
+            for (int k = 0; k < 3; ++k) {
+                const btScalar lo = y.translationLimitMin[k], hi = y.translationLimitMax[k];
+                const btScalar dot = wa.getBasis().getColumn(axis).dot(ya.getBasis().getColumn(k));
+                const btScalar old = yr.getOrigin()[k];
+                if (lo > hi || btFabs(dot) < 1 - 1.e-6 || old < lo - 1.e-6 || old > hi + 1.e-6) continue;
+                const btScalar predicted = old + dot * (target - bind);
+                conflict |= predicted < lo - slack - 1.e-6 || predicted > hi + slack + 1.e-6;
+            }
+        }
+        if (conflict) frame.setOrigin(frame.getOrigin() - frame.getBasis().getColumn(axis) * (target - bind));
+    }
+    return frame;
+}
+
 MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
     MMDBulletPhysics::NativeContext* context,
     const MMDBulletPhysics::NativeJointData* joints,
@@ -377,12 +450,18 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
         }
         if (!changed) break;
     }
+    std::vector<int> roots(size_t(context->rigidBodies.size()));
+    for (int i = 0; i < context->rigidBodies.size(); ++i) roots[i] = i;
+    for (int i = 0; i < context->anchoredWelds.size(); ++i) {
+        const auto& weld = context->anchoredWelds[i];
+        roots[weld.child] = roots[weld.parent];
+    }
     for (int i = 0; i < jointCount; ++i)
     {
         const MMDBulletPhysics::NativeJointData& joint = joints[i];
         btRigidBody& bodyA = *context->rigidBodies[joint.rigidBodyAIndex];
         btRigidBody& bodyB = *context->rigidBodies[joint.rigidBodyBIndex];
-        btTransform frameInA = ToBulletTransform(joint.frameInA);
+        btTransform frameInA = CalibrateLockedFrame(context, joints, jointCount, i, roots);
         btTransform frameInB = ToBulletTransform(joint.frameInB);
 
         btTypedConstraint* constraint = nullptr;

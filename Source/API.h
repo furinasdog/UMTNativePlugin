@@ -68,6 +68,11 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildRigidBodies(
     const MMDBulletPhysics::RigidBodySimulationData* rigidBodies,
     int rigidBodyCount);
 
+// Optional skin-derived convex proxy, in body-local metres, before BuildJoints.
+// Keeps mass, pose, collision groups and bone ownership; invalid input leaves the shape intact.
+MMDPHYSICSAPI bool MMDBulletPhysicsSetCollisionHull(
+    MMDBulletPhysics::NativeContext* context, int bodyIndex, const float* xyz, int pointCount);
+
 /// <summary>
 /// Builds native joints linking previously built rigid bodies.
 /// Counterpart to the managed <c>BuildJoints(NativeJointData[])</c>.

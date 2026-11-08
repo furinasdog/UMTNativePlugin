@@ -344,6 +344,7 @@ void ExactAnchoredWeld()
 
 void ObstructedAttachment()
 {
+    for (float stiffness : {0.f, .5f}) {
     constexpr float ContactStep = 1.f / 30.f;
     auto world = Create({0, -9.8f, 0}, ContactStep);
     std::array<RigidBodySimulationData, 3> bodies = {
@@ -359,7 +360,7 @@ void ObstructedAttachment()
     for (int axis = 0; axis < 3; ++axis) {
         joint.translationLimitMin[axis] = joint.translationLimitMax[axis] = 0;
         joint.rotationLimitMin[axis] = -.08726646f; joint.rotationLimitMax[axis] = .08726646f;
-        joint.springRotation[axis] = .5f;
+        joint.springRotation[axis] = stiffness;
     }
     MMDBulletPhysicsBuildJoints(world.get(), &joint, 1);
     Matrix obstacle{}; const int obstacleIndex = 2;
@@ -392,6 +393,7 @@ void ObstructedAttachment()
     const auto returned = Read(world.get(), 1);
     const double lean = std::acos(std::clamp(double(returned[5]), -1., 1.));
     Require(lean < .1, "Unobstructed attachment did not return within its original angular range");
+    }
 }
 
 void WeldedContactOwnership()
@@ -433,6 +435,48 @@ void WeldedContactOwnership()
     Require(error < 1.e-5, "An exact welded root incorrectly changes own-head contact relief");
 }
 
+void ConflictingLockedLoop()
+{
+    for (bool conflict : {false, true}) {
+        auto world = Create({0, -9.8f, 0});
+        std::array<RigidBodySimulationData, 3> bodies = {Body(0, 0, 2, 0, true), Body(1, 0, 2, 0), Body(2, 0, 2, 0)};
+        MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), 3);
+        std::array<NativeJointData, 3> joints = {FreeJoint(JointType::Spring6DOF, 0, 2),
+            FreeJoint(JointType::Spring6DOF, 2, 1), FreeJoint(JointType::Spring6DOF, 0, 1)};
+        for (auto& joint : joints) for (int axis = 0; axis < 3; ++axis) {
+            joint.translationLimitMin[axis] = joint.translationLimitMax[axis] = 0;
+            joint.rotationLimitMin[axis] = joint.rotationLimitMax[axis] = 0;
+        }
+        joints[1].translationLimitMin[1] = joints[1].translationLimitMax[1] = .04f;
+        joints[2].translationLimitMin[1] = conflict ? -.01f : -.1f;
+        joints[2].translationLimitMax[1] = -joints[2].translationLimitMin[1];
+        MMDBulletPhysicsBuildJoints(world.get(), joints.data(), 3);
+        for (int frame = 0; frame < 240; ++frame) MMDBulletPhysicsStepSimulation(world.get(), Step);
+        const float expected = conflict ? 2.f : 2.04f;
+        Require(std::abs(Read(world.get(), 1)[13] - expected) < .002f,
+            conflict ? "Contradictory lock lifts the bind pose" : "Compatible nonzero lock was erased");
+        Require(joints[1].translationLimitMin[1] == .04f, "Source lock data was overwritten");
+    }
+}
+
+void SkinCollisionHull()
+{
+    auto world = Create({0, -9.8f, 0});
+    std::array<RigidBodySimulationData, 2> bodies = {Body(0, 0, 0, 0, true), Body(1, .7f, 1, 0)};
+    for (auto& body : bodies) { body.size[0] = .05f; body.collisionGroupMask = -1; }
+    MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), 2);
+    const float hull[] = {-1,-.1f,-1, 1,-.1f,-1, -1,.1f,-1, 1,.1f,-1,
+                         -1,-.1f, 1, 1,-.1f, 1, -1,.1f, 1, 1,.1f, 1};
+    Require(!MMDBulletPhysicsSetCollisionHull(world.get(), 2, hull, 8), "Out-of-range hull body accepted");
+    Require(!MMDBulletPhysicsSetCollisionHull(world.get(), 0, hull, 2), "Incomplete hull accepted");
+    Require(MMDBulletPhysicsSetCollisionHull(world.get(), 0, hull, 8), "Valid skin hull rejected");
+    MMDBulletPhysicsBuildJoints(world.get(), nullptr, 0);
+    for (int frame = 0; frame < 240; ++frame) MMDBulletPhysicsStepSimulation(world.get(), Step);
+    const auto pose = Read(world.get(), 1);
+    Require(pose[13] > .14f && pose[13] < .17f, "Mesh surface outside the authored sphere has no contact");
+
+}
+
 void LinkedOnlyCollision()
 {
     auto world = Create({ 0, 0, 0 });
@@ -462,7 +506,9 @@ void LinkedOnlyCollision()
 
 int main()
 {
-    const std::array<std::pair<const char*, void (*)()>, 7> tests = {{
+    const std::array<std::pair<const char*, void (*)()>, 9> tests = {{
+        { "conflicting_locked_loop", &ConflictingLockedLoop },
+        { "skin_collision_hull", &SkinCollisionHull },
         { "zero_stiffness_damping", &ZeroStiffnessDamping },
         { "angular_limit_pendulum", &AngularLimitPendulum },
         { "linked_only_collision", &LinkedOnlyCollision },

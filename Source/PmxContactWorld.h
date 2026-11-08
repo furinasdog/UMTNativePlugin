@@ -13,7 +13,7 @@ class PmxContactWorld : public btDiscreteDynamicsWorld
         btGeneric6DofSpring2Constraint* joint;
         btRigidBody* kinematic;
         btVector3 low, high;
-        bool expanded = false;
+        btScalar relief = 0;
     };
     std::vector<Anchor> anchors;
     std::vector<int> owners;
@@ -44,7 +44,7 @@ public:
             if (bodies[child]->isStaticOrKinematicObject() || tlo.length2() != 0 || thi.length2() != 0 || low == high) continue;
             if (owners[size_t(child)] >= 0) continue;
             owners[size_t(child)] = int(anchors.size());
-            anchors.push_back({joint, a.isKinematicObject() ? &a : &b, low, high, false});
+            anchors.push_back({joint, a.isKinematicObject() ? &a : &b, low, high, 0});
             queue.push(child);
         }
         while (!queue.empty()) {
@@ -83,21 +83,22 @@ public:
         }
         for (size_t i = 0; i < anchors.size(); ++i) {
             auto& root = anchors[i];
-            // Let an obstructed attachment bend away while preserving its locked pivot and rest spring.
-            if (touching[i]) root.expanded = true;
-            else if (root.expanded) {
-                root.joint->calculateTransforms();
-                bool inside = true;
-                for (int axis = 0; axis < 3; ++axis) if (root.low[axis] <= root.high[axis]) {
-                    const btScalar angle = btAdjustAngleToLimits(root.joint->getAngle(axis), root.low[axis], root.high[axis]);
-                    inside &= angle >= root.low[axis] && angle <= root.high[axis];
-                }
-                if (inside) root.expanded = false;
+            // Recover authored limits even when the source spring has zero stiffness.
+            // Move each limit by at most 30 degrees/sec; persistent/repeated contact retains relief.
+            if (touching[i]) {
+                for (int axis = 0; axis < 3; ++axis) if (root.low[axis] < root.high[axis])
+                    root.relief = btMax(root.relief, btMax(root.low[axis] + SIMD_PI / 3,
+                        SIMD_PI / 3 - root.high[axis]));
+            } else if (root.relief > 0) {
+                root.relief = btMax(btScalar(0), root.relief - info.m_timeStep * SIMD_PI / 6);
+                auto& body = &root.joint->getRigidBodyA() == root.kinematic
+                    ? root.joint->getRigidBodyB() : root.joint->getRigidBodyA();
+                body.activate(true);
             }
             auto low = root.low; auto high = root.high;
-            if (root.expanded) for (int axis = 0; axis < 3; ++axis) if (low[axis] < high[axis]) {
-                low[axis] = btMin(low[axis], btScalar(-SIMD_PI / 3));
-                high[axis] = btMax(high[axis], btScalar(SIMD_PI / 3));
+            for (int axis = 0; axis < 3; ++axis) if (low[axis] < high[axis]) {
+                low[axis] = btMax(btMin(root.low[axis], btScalar(-SIMD_PI / 3)), root.low[axis] - root.relief);
+                high[axis] = btMin(btMax(root.high[axis], btScalar(SIMD_PI / 3)), root.high[axis] + root.relief);
             }
             root.joint->setAngularLowerLimit(low); root.joint->setAngularUpperLimit(high);
         }
