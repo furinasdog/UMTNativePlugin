@@ -394,6 +394,45 @@ void ObstructedAttachment()
     Require(lean < .1, "Unobstructed attachment did not return within its original angular range");
 }
 
+void WeldedContactOwnership()
+{
+    auto simulate = [](bool welded) {
+        constexpr float dt = 1.f / 30.f;
+        auto world = Create({0, -9.8f, 0}, dt);
+        std::array<RigidBodySimulationData, 5> bodies = {
+            Body(0, 0, 2, 0, true), Body(1, 0, 1.8f, 0), Body(2, .08f, 1.65f, 0, true),
+            Body(3, 0, 2, 0), Body(4, 0, 2, 0)};
+        for (int i = 0; i < 5; ++i) { bodies[i].relatedBoneIndex = i; bodies[i].noRelatedBone = false; }
+        bodies[2].relatedBoneIndex = 0;
+        bodies[1].shape = RigidBodyShape::Capsule;
+        bodies[1].size[0] = .02f; bodies[1].size[1] = .4f; bodies[1].mass = .25f;
+        bodies[1].linearDamping = bodies[1].angularDamping = .95f;
+        bodies[1].groupIndex = 1; bodies[1].collisionGroupMask = 1 << 2;
+        bodies[2].size[0] = .15f; bodies[2].groupIndex = 2; bodies[2].collisionGroupMask = 1 << 1;
+        MMDBulletPhysicsBuildRigidBodies(world.get(), bodies.data(), int(bodies.size()));
+        std::array<NativeJointData, 3> joints = {
+            FreeJoint(JointType::Spring6DOF, 3, 4), FreeJoint(JointType::Spring6DOF, 0, 3),
+            FreeJoint(JointType::Spring6DOF, welded ? 4 : 0, 1)};
+        for (auto& joint : joints) for (int axis = 0; axis < 3; ++axis) {
+            joint.translationLimitMin[axis] = joint.translationLimitMax[axis] = 0;
+            joint.rotationLimitMin[axis] = joint.rotationLimitMax[axis] = 0;
+        }
+        Identity(joints[2].frameInB, 0, .2f, 0);
+        for (int axis = 0; axis < 3; ++axis) {
+            joints[2].rotationLimitMin[axis] = -.034906585f;
+            joints[2].rotationLimitMax[axis] = .034906585f;
+        }
+        MMDBulletPhysicsBuildJoints(world.get(), joints.data(), int(joints.size()));
+        for (int frame = 0; frame < 360; ++frame) MMDBulletPhysicsStepSimulation(world.get(), dt);
+        return Read(world.get(), 1);
+    };
+    const auto direct = simulate(false), welded = simulate(true);
+    double error = 0;
+    for (int i = 0; i < 16; ++i) error = std::max(error, std::abs(double(direct[i]) - welded[i]));
+    std::printf("welded_own_head direct_vs_welded_pose_error=%.9g\n", error);
+    Require(error < 1.e-5, "An exact welded root incorrectly changes own-head contact relief");
+}
+
 void LinkedOnlyCollision()
 {
     auto world = Create({ 0, 0, 0 });
@@ -423,13 +462,14 @@ void LinkedOnlyCollision()
 
 int main()
 {
-    const std::array<std::pair<const char*, void (*)()>, 6> tests = {{
+    const std::array<std::pair<const char*, void (*)()>, 7> tests = {{
         { "zero_stiffness_damping", &ZeroStiffnessDamping },
         { "angular_limit_pendulum", &AngularLimitPendulum },
         { "linked_only_collision", &LinkedOnlyCollision },
         { "aligned_rest_wake", &AlignedRestWake },
         { "exact_anchored_weld", &ExactAnchoredWeld },
-        { "obstructed_attachment", &ObstructedAttachment }
+        { "obstructed_attachment", &ObstructedAttachment },
+        { "welded_contact_ownership", &WeldedContactOwnership }
     }};
     int failures = 0;
     for (const auto& test : tests)

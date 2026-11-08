@@ -370,6 +370,8 @@ MMDPHYSICSAPI void MMDBulletPhysicsBuildJoints(
             body->updateInertiaTensor();
             body->setCollisionFlags((body->getCollisionFlags() & ~btCollisionObject::CF_STATIC_OBJECT) | btCollisionObject::CF_KINEMATIC_OBJECT);
             body->forceActivationState(ISLAND_SLEEPING);
+            // Contact ownership follows the ultimate driver through exact welded roots.
+            body->setUserIndex2(context->rigidBodies[parent]->getUserIndex2());
             context->anchoredWelds.push_back({parent, child, local});
             changed = true;
         }
